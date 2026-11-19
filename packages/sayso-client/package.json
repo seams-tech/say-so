@@ -1,0 +1,29 @@
+{
+  "name": "@seams/sayso-client",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "SaySo streaming WebSocket & HTTP client SDK with deterministic canonical WAV reconstruction and local Ed25519 verdict verification.",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "type-check": "tsc --noEmit",
+    "test": "node --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "@seams/voice-verdict": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.2.0",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/spoken-intent",
+  "crates/sayso-wasm",
+]
+exclude = [
+  "crates/voice-verdict",
+  "crates/speaker-service",
+]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

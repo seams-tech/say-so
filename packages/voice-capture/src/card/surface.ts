@@ -1,0 +1,561 @@
+// The phrase surface of the package: the prompt, the recorder and the phrase card on one element.
+
+import { captureConfig } from '../config';
+import {
+  recordVoice,
+  voiceQualityMessage,
+  type VoiceCaptureEvent,
+  type VoiceRecordingOptions,
+  VoiceUserActionNeededError,
+} from '../microphone';
+import { VoiceMicrophoneInterruptedError } from '../microphoneInput';
+import { expectedSpeechMs } from '../speechPause';
+import { voiceActivityModel } from '../voiceActivity';
+import { PhraseCard, type HandedOverRows } from './phraseCard';
+import { leaveSurface, VoicePrompt } from './prompt';
+import type { VoiceLineStyle } from './ribbon';
+import type { PhraseChoice, PhraseRecording, PhraseSurface, PhraseView } from './types';
+
+const LABEL = 'Say this with your voice';
+const PROMPT_LABEL = 'Say this sentence';
+/**
+ * The status line before a recording: empty, so the sentence is the one text to read. It holds
+ * "Opening microphone…", a loading line or a problem with the recording.
+ */
+const PROMPT_MESSAGE = '';
+
+/** What the host page adds around the card. Every field is optional. */
+export type PhraseCardFrame = Readonly<{
+  /** The element that gets the card. Default: the document body. */
+  parent?: HTMLElement;
+  /** More class names for the surface element, such as the host's theme class. */
+  className?: string;
+  /**
+   * The corner controls of the card. `close` (default): Close in the trailing corner. `back`: Back
+   * in the leading corner, in place of Close. `back_and_close`: both. Each one, and Escape, ends
+   * the card as cancelled.
+   */
+  controls?: PhraseCardControls;
+  /** Runs when the person presses Back or Close, before the card ends. Escape is not a press. */
+  pressed?(control: PhraseCardControl): void;
+  /**
+   * With it, the card draws Minimize in the trailing corner, beside Close, also in the check.
+   * A press runs `minimized(true)`. The card does not hide itself: the host hides it, and the
+   * recording, the check and the caller's work go on. The card runs `minimized(false)` when it
+   * needs the person again: on a result, and when a recording needs another try. The host can
+   * show the card again before that.
+   */
+  minimized?(minimized: boolean): void;
+  /** Runs on each new stage of the card, so the host can show the progress of a hidden card. */
+  progressed?(progress: PhraseCardProgress): void;
+  /**
+   * For a host that takes commands for the card, such as voice commands. The card gives the host
+   * `press`, which presses one control of the card as the person does. Its result is false when
+   * the card does not show that control now. The value that `remote` returns runs when the card
+   * closes.
+   */
+  remote?(press: (control: PhraseCardPress) => boolean): (() => void) | void;
+  /** The host sizes its frame to the surface, so the card follows the frame. */
+  hugged?: boolean;
+  /** Runs when the surface is in the document. Its return value runs when the surface closes. */
+  mounted?(element: HTMLElement): (() => void) | void;
+}>;
+
+/** The corner controls of a phrase card. */
+export type PhraseCardControls = 'close' | 'back' | 'back_and_close';
+
+/** One corner control of a phrase card. */
+export type PhraseCardControl = 'back' | 'close';
+
+/**
+ * A control that a host can press for the person. `retry` is the card's button while it starts a
+ * recording: Record or "Try again" on the prompt, and the action of a result that has `retry`.
+ * It is never another action. `minimize`, `back` and `close` are the corner controls.
+ */
+export type PhraseCardPress = 'retry' | 'minimize' | 'back' | 'close';
+
+/**
+ * The stage of a phrase card: it waits for a press on Record or "Try again" (the microphone is
+ * off), it records the sentence, it checks the recording, or it shows a result.
+ */
+export type PhraseCardProgress = Readonly<{
+  stage: 'waiting' | 'recording' | 'checking' | 'result';
+  /** The parts of the check that are over, of `total`. Both are 0 outside a check. */
+  done: number;
+  total: number;
+}>;
+
+export type PhraseCardInput = Readonly<{
+  sentence: string;
+  signal: AbortSignal;
+  frame?: PhraseCardFrame;
+  /** The speech detector of the recordings. Default: `model`. */
+  detector?: VoiceRecordingOptions['detector'];
+  /**
+   * The first recording starts when the caller asks for it, with no press on Record. Use it
+   * when the person just asked for this card, with a click or a key. If the browser does not
+   * start audio without a press, the card stays with its Record button.
+   */
+  autoStart?: boolean;
+  /**
+   * The text that the sentence speaks for, such as the note that a spoken summary signs. With
+   * it, the card is a form: the text in a soft box under its label, the sentence centred in a
+   * box under its own label, and one button at the foot that is the voice line while the card
+   * records. The text stays for the check and the result.
+   */
+  context?: PhraseCardContext;
+  /**
+   * How the card draws the voice while it listens: `wave`, sine wave lines (the default), or
+   * `pixels`, columns of dots in blue tones. Without it, the theme value `--seams-shape-voiceLine`
+   * (`wave` or `pixels`) decides, so a Wallet host can choose it with its theme.
+   */
+  voiceLine?: VoiceLineStyle;
+  /**
+   * The card's colours, as CSS colours, for example `{ buttonBackground: '#1d9bf0' }`. Each one
+   * sets the CSS variable `--seams-colors-<key>` on this card, over the page's own value. A
+   * Seams Wallet app sets the same keys in `appearance.theme.colors`.
+   */
+  colors?: PhraseCardColors;
+}>;
+
+/** The colours that a phrase card reads. */
+const PHRASE_CARD_COLORS = [
+  /** The card, its text, its lines and its soft boxes. */
+  'colorBackground',
+  'textPrimary',
+  'textSecondary',
+  'textMuted',
+  'borderPrimary',
+  'surface',
+  /** The segments of a check that have not run yet. */
+  'surface3',
+  /** The main button (Record, the voice line of a form card, Done) and its text. */
+  'buttonBackground',
+  'textButton',
+  /** A failed check, and a held one. */
+  'error',
+  'info',
+  /** The voice line, its echoes, and the bands of the pixel style. */
+  'voiceLine',
+  'voiceEcho',
+  'voiceEchoDeep',
+  /** A form card: the fill of the sentence's box, and the button behind the pixels. */
+  'voiceFill',
+  'voicePixelBackground',
+] as const;
+
+export type PhraseCardColor = (typeof PHRASE_CARD_COLORS)[number];
+export type PhraseCardColors = Partial<Readonly<Record<PhraseCardColor, string>>>;
+
+/** The text that a phrase card shows above its sentence. */
+export type PhraseCardContext = Readonly<{
+  /** The label above the text, such as "Your note on @alice". */
+  label: string;
+  text: string;
+  /** The label above the sentence, such as "Read this aloud to post". Default: "Say this sentence". */
+  sentenceLabel?: string;
+}>;
+
+/**
+ * Shows the given sentence in the prompt. The surface records clips with the quality check, and
+ * stays open so the caller can show its check and the result in the same card. A too quiet or
+ * interrupted recording stays on the surface for another try.
+ */
+export function openPhraseCard(input: PhraseCardInput): PhraseSurface {
+  return new CardSurface(input);
+}
+
+class CardSurface implements PhraseSurface {
+  private readonly element: HTMLElement;
+  private readonly prompt: VoicePrompt;
+  private readonly card: PhraseCard;
+  private readonly unmounted: (() => void) | void;
+  private readonly outer: AbortSignal;
+  private readonly detector: VoiceRecordingOptions['detector'];
+  private readonly pressed: PhraseCardFrame['pressed'];
+  private readonly controls: PhraseCardControls;
+  /** Ends the host's hold of `press`. */
+  private readonly remoteEnded: (() => void) | void;
+  /** The person pressed a result's "Try again": the next recording starts with no press. */
+  private retryPressed = false;
+  /** Back, when the card shows it apart from Close. */
+  private readonly back: HTMLButtonElement | null;
+  /** Minimize, when the host can hide the card. */
+  private readonly minimize: HTMLButtonElement | null;
+  private readonly minimizedHook: PhraseCardFrame['minimized'];
+  private readonly progressedHook: PhraseCardFrame['progressed'];
+  /** The person pressed Minimize, and the card has not asked to show again since. */
+  private minimized = false;
+  /** The last stage that the host heard, as a key. */
+  private progress = '';
+  private recorder: AbortController | null = null;
+  private recording: Deferred<PhraseRecording> | null = null;
+  private choice: ((choice: PhraseChoice) => void) | null = null;
+  private view: PhraseView | null = null;
+  private started = false;
+  private closed = false;
+  /** The next recording starts with no press. A card that continues another never does. */
+  private autoStart: boolean;
+  /** The voiced time of the whole sentence, after which a shorter pause ends a recording. */
+  private readonly expectedSpeechMs: number;
+  /** The speech detector has started; before that, a recording waits for it to load. */
+  private speechDetectorReady = false;
+
+  constructor(input: PhraseCardInput) {
+    const { sentence, frame = {} } = input;
+    const outer = input.signal;
+    this.outer = outer;
+    this.detector = input.detector;
+    this.autoStart = input.autoStart === true;
+    this.expectedSpeechMs = expectedSpeechMs(sentence);
+    // A card that the host just finished stays on screen for this card: the host marks it.
+    const handedOver = document.querySelector<HTMLElement>(
+      '.seams-voiceid-activation-surface[data-seams-voiceid-handoff]',
+    );
+    // The first recording on a page waits for the speech detector (about 16 MB with its engine),
+    // so it starts loading while the person reads the sentence. A failure shows on Record.
+    if (input.detector === 'level') this.speechDetectorReady = true;
+    else voiceActivityModel.prepare().then(this.detectorStarted, ignoreEarlyLoad);
+    const parent = frame.parent ?? document.body;
+    this.element = document.createElement('section');
+    this.element.className = ['seams-voiceid-activation-surface', frame.className]
+      .filter(Boolean)
+      .join(' ');
+    this.element.setAttribute('role', 'dialog');
+    this.element.setAttribute('aria-modal', 'true');
+    this.element.setAttribute('aria-label', LABEL);
+    paintColors(this.element, input.colors);
+    this.prompt = new VoicePrompt(document, LABEL, sentence);
+    const promptLabel = input.context?.sentenceLabel ?? PROMPT_LABEL;
+    this.prompt.title.textContent = promptLabel;
+    // A sentence that already ends with punctuation, such as an enrollment phrase, keeps it.
+    const shown = /[.!?]$/.test(sentence) ? sentence : `${sentence}.`;
+    this.prompt.phrase.textContent = shown;
+    delete this.prompt.phrase.dataset.voiceidPhrase;
+    this.prompt.status.textContent = PROMPT_MESSAGE;
+    this.prompt.record.textContent = 'Record';
+    const controls = frame.controls ?? 'close';
+    this.controls = controls;
+    this.pressed = frame.pressed;
+    const back = controls === 'close' ? null : this.prompt.showBack(controls === 'back_and_close');
+    if (input.context) this.prompt.showContext(input.context.label, input.context.text);
+    this.back = back === this.prompt.cancel ? null : back;
+    this.minimizedHook = frame.minimized;
+    this.progressedHook = frame.progressed;
+    this.minimize = frame.minimized ? this.prompt.showMinimize() : null;
+    const handedOverPrompt = handedOver?.querySelector(':scope > .seams-voiceid-prompt') ?? null;
+    const rows = handedOverPrompt ? handedOverRows(handedOverPrompt) : null;
+    if (handedOverPrompt) {
+      // The card starts as the card it replaces, so the swap does not show; then its rows change.
+      this.prompt.continueFrom(handedOverPrompt);
+      this.prompt.record.hidden = true;
+      this.autoStart = false;
+    }
+    this.card = new PhraseCard(
+      this.prompt,
+      { label: promptLabel, sentence: shown, message: PROMPT_MESSAGE, action: 'Record' },
+      rows,
+    );
+    // A card that records by itself shows no Record button and has no row for it, so its rows
+    // sit in the middle of the card. The row comes back when the card needs the button.
+    if (this.autoStart) {
+      this.prompt.record.hidden = true;
+      this.prompt.element.dataset.autoStart = '';
+      this.prompt.element.tabIndex = -1;
+    }
+    this.element.append(this.prompt.element);
+    this.prompt.record.addEventListener('click', this.press);
+    const corner = controls === 'back' ? this.pressBack : this.pressClose;
+    this.prompt.cancel.addEventListener('click', corner);
+    this.back?.addEventListener('click', this.pressBack);
+    this.minimize?.addEventListener('click', this.pressMinimize);
+    this.element.addEventListener('cancel', this.cancel);
+    outer.addEventListener('abort', this.cancel);
+    if (handedOver) handedOver.replaceWith(this.element);
+    else parent.appendChild(this.element);
+    // The theme's choice is readable only once the card is in the document.
+    const voiceLine = input.voiceLine ?? themeVoiceLine(this.prompt.element);
+    if (voiceLine === 'pixels') this.prompt.useVoiceLine(voiceLine);
+    // The host sizes its frame to this surface, so the card can follow the frame (fillFrame).
+    if (frame.hugged) this.element.classList.add('seams-voiceid-hugged');
+    this.unmounted = frame.mounted?.(this.element);
+    this.remoteEnded = frame.remote?.(this.pressFor);
+    if (rows || this.autoStart) this.prompt.element.focus({ preventScroll: true });
+    else this.prompt.record.focus({ preventScroll: true });
+    if (outer.aborted) this.cancel();
+  }
+
+  record(): Promise<PhraseRecording> {
+    if (this.closed) return Promise.resolve({ kind: 'cancelled' });
+    this.settleChoice('replaced');
+    this.recording?.resolve({ kind: 'cancelled' });
+    const recording = deferred<PhraseRecording>();
+    this.recording = recording;
+    const again = this.retryPressed;
+    this.retryPressed = false;
+    if (this.view) {
+      this.view = null;
+      const shown = this.card.showPrompt();
+      // "Try again" on the result was the press: the recording starts with no press on Record,
+      // when the prompt is back.
+      if (again) void shown.then(() => this.beginAfterRetry(recording));
+      else this.report({ stage: 'waiting', done: 0, total: 0 });
+    } else if (this.autoStart) {
+      this.begin(recording);
+    } else {
+      this.report({ stage: 'waiting', done: 0, total: 0 });
+    }
+    this.autoStart = false;
+    return recording.promise;
+  }
+
+  show(view: PhraseView): Promise<PhraseChoice> {
+    // A view has its own button row (a result's action), or none (a check).
+    delete this.prompt.element.dataset.autoStart;
+    if (this.closed) return Promise.resolve('closed');
+    this.settleChoice('replaced');
+    this.view = view;
+    if (view.kind === 'check') {
+      const done = view.segments.filter((state) => state === 'done' || state === 'skip').length;
+      this.report({ stage: 'checking', done, total: view.segments.length });
+    } else {
+      this.report({ stage: 'result', done: 0, total: 0 });
+      this.needPerson();
+    }
+    void this.card.show(view);
+    return new Promise((resolve) => {
+      this.choice = resolve;
+    });
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.recorder?.abort();
+    this.recording?.resolve({ kind: 'cancelled' });
+    this.settleChoice('closed');
+    this.unmounted?.();
+    this.remoteEnded?.();
+    this.outer.removeEventListener('abort', this.cancel);
+    this.element.removeEventListener('cancel', this.cancel);
+    this.prompt.record.removeEventListener('click', this.press);
+    this.prompt.cancel.removeEventListener('click', this.pressBack);
+    this.prompt.cancel.removeEventListener('click', this.pressClose);
+    this.back?.removeEventListener('click', this.pressBack);
+    this.minimize?.removeEventListener('click', this.pressMinimize);
+    this.card.dispose();
+    this.prompt.dispose();
+    leaveSurface(this.element);
+  }
+
+  /** The one button records on the prompt and answers a result. */
+  private readonly press = (): void => {
+    if (this.view) {
+      if (this.view.kind === 'result' && !this.view.action.busy) {
+        this.retryPressed = this.view.action.retry === true;
+        this.settleChoice('action');
+      }
+      return;
+    }
+    if (!this.recording || this.started) return;
+    this.begin(this.recording);
+  };
+
+  /** True while the card's button starts a recording, and the microphone is off. */
+  private canRetry(): boolean {
+    if (this.closed) return false;
+    if (this.view) return this.view.kind === 'result' && this.view.action.retry === true && !this.view.action.busy;
+    return this.recording !== null && !this.started;
+  }
+
+  /** A press of the host for the person (PhraseCardFrame.remote). */
+  private readonly pressFor = (control: PhraseCardPress): boolean => {
+    if (this.closed) return false;
+    switch (control) {
+      case 'retry':
+        if (!this.canRetry()) return false;
+        this.press();
+        return true;
+      case 'minimize':
+        if (!this.minimize || this.minimized) return false;
+        this.pressMinimize();
+        return true;
+      case 'back':
+      case 'close': {
+        // The card draws this control, and a check has no corner control.
+        const drawn = control === 'back' ? this.controls !== 'close' : this.controls !== 'back';
+        if (!drawn || this.view?.kind === 'check') return false;
+        this.pressControl(control);
+        return true;
+      }
+    }
+  };
+
+  private beginAfterRetry(recording: Deferred<PhraseRecording>): void {
+    if (this.closed || this.view || this.started || this.recording !== recording) return;
+    this.begin(recording);
+  }
+
+  private begin(recording: Deferred<PhraseRecording>): void {
+    this.started = true;
+    this.report({ stage: 'recording', done: 0, total: 0 });
+    this.prompt.record.disabled = true;
+    this.prompt.status.textContent = this.speechDetectorReady
+      ? 'Opening microphone…'
+      : `Loading ${captureConfig().label}…`;
+    void this.attempt(recording, this.autoStart);
+  }
+
+  private async attempt(recording: Deferred<PhraseRecording>, unpressed = false): Promise<void> {
+    const recorder = new AbortController();
+    this.recorder = recorder;
+    try {
+      const recorded = await recordVoice(recorder.signal, this.capture, {
+        expectedSpeechMs: this.expectedSpeechMs,
+        detector: this.detector,
+      });
+      if (this.recording !== recording || this.closed) {
+        recorded.samples?.fill(0);
+        return;
+      }
+      if (recorded.kind === 'insufficient_audio') {
+        this.retry(voiceQualityMessage(recorded.quality));
+        return;
+      }
+      // The person stopped speaking at the last voiced frame, before the end pause.
+      const endOfSpeechAt = recorded.lastSoundAtMs ?? performance.now();
+      this.started = false;
+      this.recording = null;
+      recording.resolve({ kind: 'recorded', samples: recorded.samples, endOfSpeechAt });
+    } catch (error) {
+      if (this.recording !== recording || this.closed) return;
+      if (error instanceof VoiceMicrophoneInterruptedError) {
+        this.retry(error.message);
+        return;
+      }
+      // The browser wants a press first: the card is the usual prompt again.
+      if (unpressed && error instanceof VoiceUserActionNeededError) {
+        this.retry(PROMPT_MESSAGE, 'Record');
+        return;
+      }
+      this.started = false;
+      this.recording = null;
+      recording.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+
+  private readonly detectorStarted = (): void => {
+    this.speechDetectorReady = true;
+  };
+
+  /** The end of speech starts the check in place; every other capture event is the prompt's. */
+  private readonly capture = (event: VoiceCaptureEvent): void => {
+    if (event.kind === 'processing') {
+      this.report({ stage: 'checking', done: 0, total: 0 });
+      this.card.beginCheck();
+    } else this.prompt.capture(event);
+  };
+
+  private retry(message: string, action = 'Try again'): void {
+    this.started = false;
+    delete this.prompt.element.dataset.autoStart;
+    this.prompt.record.textContent = action;
+    this.prompt.ready(message);
+    this.prompt.record.focus({ preventScroll: true });
+    this.report({ stage: 'waiting', done: 0, total: 0 });
+    this.needPerson();
+  }
+
+  /** Tells the host each new stage of the card. */
+  private report(progress: PhraseCardProgress): void {
+    const key = `${progress.stage}:${progress.done}:${progress.total}`;
+    if (key === this.progress || this.closed) return;
+    this.progress = key;
+    this.progressedHook?.(progress);
+  }
+
+  /** The person asks the host to hide the card. A host that showed it again can hide it again. */
+  private readonly pressMinimize = (): void => {
+    if (this.closed) return;
+    this.minimized = true;
+    this.minimizedHook?.(true);
+  };
+
+  /** The card needs the person: the host shows the card that it hid. */
+  private needPerson(): void {
+    if (!this.minimized) return;
+    this.minimized = false;
+    this.minimizedHook?.(false);
+  }
+
+  private settleChoice(choice: PhraseChoice): void {
+    const settle = this.choice;
+    this.choice = null;
+    settle?.(choice);
+  }
+
+  /** A close during a check is not possible: the button is hidden while the caller works. */
+  private readonly pressBack = (): void => this.pressControl('back');
+  private readonly pressClose = (): void => this.pressControl('close');
+
+  private pressControl(control: PhraseCardControl): void {
+    // The check view hides the corner controls, and a press there does not end the card.
+    if (this.view?.kind === 'check') return;
+    this.pressed?.(control);
+    this.cancel();
+  }
+
+  private readonly cancel = (): void => {
+    if (this.view?.kind === 'check' && !this.outer.aborted) return;
+    if (this.recording) {
+      this.recorder?.abort();
+      this.recording.resolve({ kind: 'cancelled' });
+      this.recording = null;
+      this.started = false;
+    }
+    this.settleChoice('closed');
+    if (this.outer.aborted) this.close();
+  };
+}
+
+/** Sets the card's own colours. Keys that a card does not read are left out. */
+function paintColors(element: HTMLElement, colors: PhraseCardColors | undefined): void {
+  if (!colors) return;
+  for (const key of PHRASE_CARD_COLORS) {
+    const value = colors[key];
+    if (value) element.style.setProperty(`--seams-colors-${key}`, value);
+  }
+}
+
+/** The theme's `--seams-shape-voiceLine`: `pixels`, or else the wave lines. */
+function themeVoiceLine(element: HTMLElement): VoiceLineStyle {
+  const value = getComputedStyle(element).getPropertyValue('--seams-shape-voiceLine').trim();
+  return value === 'pixels' ? 'pixels' : 'wave';
+}
+
+/** A failed early load runs again when Record needs the detector, and shows its error there. */
+function ignoreEarlyLoad(): void {}
+
+/** The rows that the handed-over card shows now. */
+function handedOverRows(prompt: Element): HandedOverRows {
+  const read = (selector: string): string =>
+    prompt.querySelector(`:scope > ${selector}`)?.textContent ?? '';
+  return { label: read('h2'), message: read('.seams-voiceid-status') };
+}
+
+type Deferred<T> = Readonly<{
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: Error): void;
+}>;
+
+/** A promise with its two settle functions. */
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+}

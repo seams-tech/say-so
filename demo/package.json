@@ -1,0 +1,25 @@
+{
+  "name": "@sayso/demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5179",
+    "build": "vite build",
+    "preview": "vite preview --port 5179",
+    "type-check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@seams/sayso-client": "workspace:*",
+    "@seams/voice-verdict": "workspace:*",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.9.3",
+    "vite": "^6.2.0"
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "sayso-verifier",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-10-01",
+  "ai": {
+    "binding": "AI"
+  },
+  "rules": [
+    {
+      "type": "CompiledWasm",
+      "globs": ["**/*.wasm"],
+      "fallthrough": true
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ACCOUNT_VOICE",
+        "class_name": "AccountVoiceDO"
+      },
+      {
+        "name": "MULTISIG_PROPOSAL",
+        "class_name": "MultisigProposalDO"
+      },
+      {
+        "name": "SPEAKER_CONTAINER",
+        "class_name": "SpeakerContainer"
+      }
+    ]
+  },
+  "containers": [
+    {
+      "class_name": "SpeakerContainer",
+      "image": "../../crates/speaker-service/Dockerfile.cloudflare",
+      "max_instances": 4,
+      "instance_type": "standard-1"
+    }
+  ],
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "AccountVoiceDO",
+        "MultisigProposalDO",
+        "SpeakerContainer"
+      ]
+    }
+  ],
+  "vars": {
+    "SAYSO_ALLOWED_ORIGIN": "*"
+  }
+}
