@@ -1,4 +1,4 @@
 # Copy to `.dev.vars` for offline local UI testing without Docker or remote Workers AI.
-# Verdicts issued in mock mode are visibly tagged `"verifier": "sayso/0.1.0+mock"`.
+# Verdicts issued in mock mode are visibly tagged `"verifier": "sayso/0.2.0+mock"`.
 SAYSO_DEV_MOCK=true
 VERDICT_SECRET_KEY_HEX=1111111111111111111111111111111111111111111111111111111111111111

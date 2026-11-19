@@ -1,8 +1,7 @@
-//! SaySo pure WASM core (`wasm32-unknown-unknown` + native `rlib` for unit tests).
+//! SaySo pure WASM core (`wasm32-unknown-unknown` + native `rlib`, zero Web3/chain deps).
 pub mod audio;
 pub mod embedding;
-pub mod policy;
-pub mod request;
+pub mod intent;
 pub mod verdict;
 pub mod words;
 
@@ -10,40 +9,27 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use spoken_intent::{confusion_set, render, request_digest, spoken_text_digest};
 
 use crate::audio::{decode_pcm16_le, decode_wav, energy_gate, sha256, wav_bytes};
 use crate::embedding::{
     agreement, f32_values_le, hex_string, model_sha256, similarity_milli, speaker_passes,
     Agreement, Embedding, TemplateRecord,
 };
-use crate::policy::{decide, Decision};
-use crate::request::{build_request, RequestInput, StoredMultisigProposal};
+use crate::intent::{intent_digest, spoken_text_digest, validate_intent, IntentInput};
 use crate::verdict::{
-    b64, b64u, verdict_json, verdict_message, MultisigOpening, Outcome, Reason, Verdict,
-    VERDICT_TTL_MS,
+    b64, b64u, verdict_json, verdict_message, Outcome, Reason, Verdict, VERDICT_TTL_MS,
 };
-use crate::words::{check_words, is_summary_request, matched_prefix_count, words_pass};
+use crate::words::check_words;
 
 #[derive(Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 enum Command {
     Prepare {
-        owner: String,
-        request: RequestInput,
-        #[serde(default)]
-        contacts: Vec<String>,
-        salt_hex: Option<String>,
-        stored_proposal: Option<StoredMultisigProposal>,
+        intent: IntentInput,
     },
     StreamProgress {
-        owner: String,
-        request: RequestInput,
-        #[serde(default)]
-        contacts: Vec<String>,
+        intent: IntentInput,
         transcript: String,
-        salt_hex: Option<String>,
-        stored_proposal: Option<StoredMultisigProposal>,
     },
     AudioFromPcm {
         pcm_b64: String,
@@ -52,29 +38,23 @@ enum Command {
         wav_b64: String,
     },
     EvaluateVerify {
-        owner: String,
-        request: RequestInput,
-        #[serde(default)]
-        contacts: Vec<String>,
+        intent: IntentInput,
         audio_digest_b64u: Option<String>,
         gate_passes: bool,
         audio_reused: bool,
         template_svt1_b64: Option<String>,
         embedding_le_b64: Option<String>,
-        #[serde(default)]
-        other_signer_templates_b64: Vec<String>,
         transcript: Option<String>,
-        summary_passes: Option<bool>,
         now_ms: u64,
         verifier_version: Option<String>,
-        salt_hex: Option<String>,
-        stored_proposal: Option<StoredMultisigProposal>,
     },
     RefuseVerdict {
         reason: Reason,
         now_ms: u64,
         verifier_version: Option<String>,
-        request_digest_b64u: Option<String>,
+        user_id: Option<String>,
+        action: Option<String>,
+        intent_digest_b64u: Option<String>,
         spoken_text_digest_b64u: Option<String>,
         audio_digest_b64u: Option<String>,
     },
@@ -92,11 +72,8 @@ struct SignedVerdictReady {
     verdict_json: String,
     verdict_message_b64: String,
     expires_at_ms: u64,
-    policy_text: Option<&'static str>,
-    multisig: Option<MultisigOpening>,
 }
 
-/// Pure JSON dispatcher used both natively in Rust tests and via WASM FFI in Cloudflare Workers.
 pub fn dispatch_json(input: &str) -> String {
     let parsed: Command = match serde_json::from_str(input) {
         Ok(cmd) => cmd,
@@ -111,68 +88,29 @@ pub fn dispatch_json(input: &str) -> String {
     };
 
     let response: Value = match parsed {
-        Command::Prepare {
-            owner,
-            request,
-            contacts,
-            salt_hex,
-            stored_proposal,
-        } => match build_request(
-            &owner,
-            &request,
-            &contacts,
-            salt_hex.as_deref(),
-            stored_proposal.as_ref(),
-        ) {
-            Ok(built) => {
-                let rendered = render(&built.request);
-                let req_digest = b64u(&request_digest(&built.request));
-                let text_digest = b64u(&spoken_text_digest(&built.request, &rendered));
-                let tokens: Vec<&str> = rendered.spoken.iter().map(|t| t.as_str()).collect();
-                json!({
-                    "ok": true,
-                    "sentence": rendered.spoken_text,
-                    "display_text": rendered.display_text,
-                    "expected_tokens": tokens,
-                    "request_digest_b64u": req_digest,
-                    "spoken_text_digest_b64u": (!built.recalled).then_some(text_digest),
-                    "recalled": built.recalled,
-                    "is_summary": is_summary_request(&built.request),
-                    "multisig_commitment_hex": built.multisig_commitment.map(|c| hex_string(&c)),
-                })
-            }
+        Command::Prepare { intent } => match validate_intent(&intent) {
+            Ok(valid) => json!({
+                "ok": true,
+                "sentence": valid.canonical_sentence,
+                "display_text": valid.display_text,
+                "expected_tokens": valid.expected_tokens,
+                "intent_digest_b64u": b64u(&intent_digest(&valid)),
+                "spoken_text_digest_b64u": b64u(&spoken_text_digest(&valid.canonical_sentence)),
+            }),
             Err(reason) => json!({ "ok": false, "reason": reason }),
         },
 
-        Command::StreamProgress {
-            owner,
-            request,
-            contacts,
-            transcript,
-            salt_hex,
-            stored_proposal,
-        } => match build_request(
-            &owner,
-            &request,
-            &contacts,
-            salt_hex.as_deref(),
-            stored_proposal.as_ref(),
-        ) {
-            Ok(built) => {
-                let rendered = render(&built.request);
-                let confusions = confusion_set(&built.request, &built.contacts);
-                let checked =
-                    check_words(&transcript, &built.contacts, &rendered.spoken, &confusions);
-                let prefix = matched_prefix_count(&rendered.spoken, &checked.heard_tokens);
-                let passes_now = words_pass(&built.request, &checked, &rendered.spoken);
+        Command::StreamProgress { intent, transcript } => match validate_intent(&intent) {
+            Ok(valid) => {
+                let checked = check_words(&transcript, &valid.expected_tokens);
                 json!({
                     "ok": true,
                     "heard": checked.heard,
                     "heard_tokens": checked.heard_tokens,
-                    "matched_prefix_count": prefix,
-                    "expected_count": rendered.spoken.len(),
-                    "matched_exact": checked.matched,
-                    "passes_now": passes_now,
+                    "matched_prefix_count": checked.matched_prefix_count,
+                    "expected_count": valid.expected_tokens.len(),
+                    "matched_exact": checked.matched_exact,
+                    "passes_now": checked.passes,
                 })
             }
             Err(reason) => json!({ "ok": false, "reason": reason }),
@@ -197,38 +135,26 @@ pub fn dispatch_json(input: &str) -> String {
         },
 
         Command::EvaluateVerify {
-            owner,
-            request,
-            contacts,
+            intent,
             audio_digest_b64u,
             gate_passes,
             audio_reused,
             template_svt1_b64,
             embedding_le_b64,
-            other_signer_templates_b64,
             transcript,
-            summary_passes,
             now_ms,
             verifier_version,
-            salt_hex,
-            stored_proposal,
         } => {
             let result = evaluate_verify_inner(
-                &owner,
-                &request,
-                &contacts,
+                &intent,
                 audio_digest_b64u,
                 gate_passes,
                 audio_reused,
                 template_svt1_b64.as_deref(),
                 embedding_le_b64.as_deref(),
-                &other_signer_templates_b64,
                 transcript.as_deref(),
-                summary_passes,
                 now_ms,
                 verifier_version.as_deref(),
-                salt_hex.as_deref(),
-                stored_proposal.as_ref(),
             );
             serde_json::to_value(result).expect("serializes")
         }
@@ -237,14 +163,18 @@ pub fn dispatch_json(input: &str) -> String {
             reason,
             now_ms,
             verifier_version,
-            request_digest_b64u,
+            user_id,
+            action,
+            intent_digest_b64u,
             spoken_text_digest_b64u,
             audio_digest_b64u,
         } => {
             let mut verdict = Verdict::new(now_ms, verifier_version.as_deref());
             verdict.outcome = Outcome::Refuse;
             verdict.reason = Some(reason);
-            verdict.request_digest = request_digest_b64u;
+            verdict.user_id = user_id;
+            verdict.action = action;
+            verdict.intent_digest = intent_digest_b64u;
             verdict.spoken_text_digest = spoken_text_digest_b64u;
             verdict.audio_digest = audio_digest_b64u;
             let text = verdict_json(&verdict);
@@ -256,8 +186,6 @@ pub fn dispatch_json(input: &str) -> String {
                 verdict_json: text,
                 verdict_message_b64: b64(&msg),
                 expires_at_ms: verdict.expires_at_ms,
-                policy_text: None,
-                multisig: None,
             })
             .expect("serializes")
         }
@@ -331,37 +259,24 @@ fn encode_audio_result(samples: &[i16]) -> Value {
 
 #[allow(clippy::too_many_arguments)]
 fn evaluate_verify_inner(
-    owner: &str,
-    request_input: &RequestInput,
-    contacts: &[String],
+    intent_input: &IntentInput,
     audio_digest_b64u: Option<String>,
     gate_passes: bool,
     audio_reused: bool,
     template_svt1_b64: Option<&str>,
     embedding_le_b64: Option<&str>,
-    other_signer_templates_b64: &[String],
     transcript: Option<&str>,
-    summary_passes: Option<bool>,
     now_ms: u64,
     verifier_version: Option<&str>,
-    salt_hex: Option<&str>,
-    stored_proposal: Option<&StoredMultisigProposal>,
 ) -> SignedVerdictReady {
     let mut verdict = Verdict::new(now_ms, verifier_version);
-    let mut policy_text = None;
-    let mut multisig = None;
 
-    let step = |verdict: &mut Verdict,
-                policy_text: &mut Option<&'static str>,
-                multisig: &mut Option<MultisigOpening>|
-     -> Result<Outcome, Reason> {
-        let built = build_request(owner, request_input, contacts, salt_hex, stored_proposal)?;
-        let rendered = render(&built.request);
-        let text_digest = b64u(&spoken_text_digest(&built.request, &rendered));
-        verdict.request_digest = Some(b64u(&request_digest(&built.request)));
-        if !built.recalled {
-            verdict.spoken_text_digest = Some(text_digest.clone());
-        }
+    let step = |verdict: &mut Verdict| -> Result<(), Reason> {
+        let valid = validate_intent(intent_input)?;
+        verdict.user_id = Some(valid.user_id.clone());
+        verdict.action = Some(valid.action.clone());
+        verdict.intent_digest = Some(b64u(&intent_digest(&valid)));
+        verdict.spoken_text_digest = Some(b64u(&spoken_text_digest(&valid.canonical_sentence)));
 
         let Some(audio_digest) = audio_digest_b64u else {
             return Err(Reason::AudioInvalid);
@@ -398,64 +313,28 @@ fn evaluate_verify_inner(
             return Err(Reason::Speaker);
         }
 
-        for other_b64 in other_signer_templates_b64 {
-            let other_bytes = STANDARD.decode(other_b64.trim()).map_err(|_| Reason::Storage)?;
-            let other_record = TemplateRecord::decode(&other_bytes).ok_or(Reason::Storage)?;
-            if speaker_passes(similarity_milli(&live_embedding, &other_record.template)) {
-                return Err(Reason::SameSpeaker);
-            }
-        }
-
         let Some(transcript_text) = transcript else {
             return Err(Reason::TranscriberUnavailable);
         };
-        let confusions = confusion_set(&built.request, &built.contacts);
-        let checked = check_words(transcript_text, &built.contacts, &rendered.spoken, &confusions);
-        if !built.recalled {
-            verdict.word_margin_milli = checked.margin_milli;
-        }
-        if !words_pass(&built.request, &checked, &rendered.spoken) {
+        let checked = check_words(transcript_text, &valid.expected_tokens);
+        if !checked.passes {
             if !checked.heard.is_empty() {
                 verdict.heard = Some(checked.heard);
             }
             return Err(Reason::Words);
         }
 
-        if let Some(false) = summary_passes {
-            return Err(Reason::SummaryMismatch);
-        }
-
-        if built.recalled {
-            verdict.spoken_text_digest = Some(text_digest);
-            verdict.word_margin_milli = checked.margin_milli;
-        }
-        if let (Some(commitment), Some(salt)) = (built.multisig_commitment, built.multisig_salt) {
-            *multisig = Some(MultisigOpening {
-                commitment: b64u(&commitment),
-                salt: b64u(&salt),
-            });
-        }
-
-        match decide(&built.request) {
-            Decision::Allow => Ok(Outcome::Accept),
-            Decision::StepUp(rule) => {
-                verdict.policy_rule = Some(rule.id.to_string());
-                *policy_text = Some(rule.text);
-                Ok(Outcome::StepUp)
-            }
-        }
+        Ok(())
     };
 
-    match step(&mut verdict, &mut policy_text, &mut multisig) {
-        Ok(outcome) => {
-            verdict.outcome = outcome;
+    match step(&mut verdict) {
+        Ok(()) => {
+            verdict.outcome = Outcome::Accept;
             verdict.reason = None;
         }
         Err(reason) => {
             verdict.outcome = Outcome::Refuse;
             verdict.reason = Some(reason);
-            policy_text = None;
-            multisig = None;
         }
     }
 
@@ -468,13 +347,8 @@ fn evaluate_verify_inner(
         verdict_json: text,
         verdict_message_b64: b64(&msg),
         expires_at_ms: verdict.expires_at_ms.min(now_ms.saturating_add(VERDICT_TTL_MS)),
-        policy_text,
-        multisig,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Minimal C-ABI exports for Cloudflare Workers (`wasm32-unknown-unknown`).
 
 #[no_mangle]
 pub extern "C" fn sayso_alloc(len: usize) -> *mut u8 {
@@ -508,8 +382,7 @@ pub unsafe extern "C" fn sayso_call(ptr: *const u8, len: usize) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ed25519_dalek::{Signer, SigningKey};
-    use voice_verdict::{check_verdict, confirmation_borsh, Check, Outcome as CheckedOutcome};
+    use ed25519_dalek::{Signer, SigningKey, Verifier};
 
     fn axis_embedding_le_b64(axis: usize, angle: f32) -> String {
         let mut values = vec![0.0f32; 192];
@@ -528,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn enroll_stream_and_verify_round_trip_matches_voice_verdict_crate() {
+    fn enroll_normalize_negation_guard_and_ed25519_verdict() {
         let enroll_res: Value = serde_json::from_str(&dispatch_json(
             &json!({
                 "cmd": "evaluate_enroll",
@@ -543,96 +416,64 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(enroll_res["ok"], true);
-        assert_eq!(enroll_res["template_epoch"], 1);
-        let template_b64 = enroll_res["template_svt1_b64"].as_str().unwrap().to_string();
-        assert_eq!(STANDARD.decode(&template_b64).unwrap().len(), 808);
+        let template_b64 = enroll_res["template_svt1_b64"].as_str().unwrap();
 
-        let payload_hash = [0x42u8; 32];
-        let payload_hex = hex_string(&payload_hash);
-        let request = json!({
-            "kind": "confirmation",
-            "context": "agent/refund",
-            "payload_sha256_hex": payload_hex,
-            "summary": "approve refund forty five dollars",
+        let intent = json!({
+            "user_id": "alice@acme.com",
+            "action": "stripe/payout",
+            "payload_sha256_hex": "42".repeat(32),
+            "sentence": "Approve payout $45",
         });
 
         let prep: Value = serde_json::from_str(&dispatch_json(
-            &json!({
-                "cmd": "prepare",
-                "owner": "app:sayso",
-                "request": request,
-            })
-            .to_string(),
+            &json!({ "cmd": "prepare", "intent": intent }).to_string(),
         ))
         .unwrap();
         assert_eq!(prep["ok"], true);
-        assert_eq!(prep["sentence"], "approve refund forty five dollars");
+        assert_eq!(prep["sentence"], "approve payout forty five dollars");
 
-        let partial: Value = serde_json::from_str(&dispatch_json(
-            &json!({
-                "cmd": "stream_progress",
-                "owner": "app:sayso",
-                "request": request,
-                "transcript": "approve refund forty",
-            })
-            .to_string(),
-        ))
-        .unwrap();
-        assert_eq!(partial["matched_prefix_count"], 3);
-        assert_eq!(partial["passes_now"], false);
+        for good in [
+            "Approve payout $45.",
+            "approve payout 45 dollars",
+            "Approve payout forty-five dollars!",
+        ] {
+            let prog: Value = serde_json::from_str(&dispatch_json(
+                &json!({ "cmd": "stream_progress", "intent": intent, "transcript": good })
+                    .to_string(),
+            ))
+            .unwrap();
+            assert_eq!(prog["passes_now"], true, "expected pass for {good}");
+        }
 
-        let exact: Value = serde_json::from_str(&dispatch_json(
-            &json!({
-                "cmd": "stream_progress",
-                "owner": "app:sayso",
-                "request": request,
-                "transcript": "Approve refund forty-five dollars.",
-            })
-            .to_string(),
-        ))
-        .unwrap();
-        assert_eq!(exact["matched_exact"], true);
-        assert_eq!(exact["passes_now"], true);
-
-        let negated: Value = serde_json::from_str(&dispatch_json(
-            &json!({
-                "cmd": "stream_progress",
-                "owner": "app:sayso",
-                "request": request,
-                "transcript": "Approve refund forty five dollars not",
-            })
-            .to_string(),
-        ))
-        .unwrap();
-        assert_eq!(negated["passes_now"], false);
+        for bad in [
+            "Approve payout $45 not",
+            "Do not approve payout $45",
+            "Approve payout $46",
+        ] {
+            let prog: Value = serde_json::from_str(&dispatch_json(
+                &json!({ "cmd": "stream_progress", "intent": intent, "transcript": bad })
+                    .to_string(),
+            ))
+            .unwrap();
+            assert_eq!(prog["passes_now"], false, "expected refusal for {bad}");
+        }
 
         let audio: Value = serde_json::from_str(&dispatch_json(
-            &json!({
-                "cmd": "audio_from_pcm",
-                "pcm_b64": tone_pcm_b64(1_200),
-            })
-            .to_string(),
+            &json!({ "cmd": "audio_from_pcm", "pcm_b64": tone_pcm_b64(1_000) }).to_string(),
         ))
         .unwrap();
-        assert_eq!(audio["ok"], true);
         assert_eq!(audio["gate_passes"], true);
-        let audio_digest_b64u = audio["audio_digest_b64u"].as_str().unwrap().to_string();
-        let wav = STANDARD
-            .decode(audio["canonical_wav_b64"].as_str().unwrap())
-            .unwrap();
-        let expected_audio_digest = sha256(&wav);
 
         let evaluated: Value = serde_json::from_str(&dispatch_json(
             &json!({
                 "cmd": "evaluate_verify",
-                "owner": "app:sayso",
-                "request": request,
-                "audio_digest_b64u": audio_digest_b64u,
+                "intent": intent,
+                "audio_digest_b64u": audio["audio_digest_b64u"],
                 "gate_passes": true,
                 "audio_reused": false,
                 "template_svt1_b64": template_b64,
                 "embedding_le_b64": axis_embedding_le_b64(0, 0.05),
-                "transcript": "Approve refund forty-five dollars.",
+                "transcript": "Approve payout $45.",
                 "now_ms": 1_760_000_000_000u64,
             })
             .to_string(),
@@ -641,92 +482,16 @@ mod tests {
         assert_eq!(evaluated["outcome"], "accept");
 
         let signing_key = SigningKey::from_bytes(&[7u8; 32]);
-        let verifying_key = signing_key.verifying_key().to_bytes();
-        let message_bytes = STANDARD
+        let msg = STANDARD
             .decode(evaluated["verdict_message_b64"].as_str().unwrap())
             .unwrap();
-        let sig = signing_key.sign(&message_bytes);
-        let sig_b64 = b64(&sig.to_bytes());
-
-        let borsh_bytes = confirmation_borsh(
-            "app:sayso",
-            "agent/refund",
-            &payload_hash,
-            "approve refund forty five dollars",
-        )
-        .unwrap();
-        let expected_req_digest = voice_verdict::request_digest(&borsh_bytes).unwrap();
-
-        let checked = check_verdict(
-            evaluated["verdict_json"].as_str().unwrap(),
-            &sig_b64,
-            &verifying_key,
-            &Check::at(1_760_000_050_000)
-                .request(&expected_req_digest)
-                .audio(&expected_audio_digest),
-        )
-        .expect("verdict passes seams-voice-verdict check");
-        assert_eq!(checked.outcome, CheckedOutcome::Accept);
-        assert_eq!(checked.verifier, "sayso/0.1.0");
-        assert_eq!(checked.heard, None);
-    }
-
-    #[test]
-    fn transfer_above_ten_near_triggers_step_up_and_supports_mock_tag() {
-        let enroll_res: Value = serde_json::from_str(&dispatch_json(
-            &json!({
-                "cmd": "evaluate_enroll",
-                "embeddings_le_b64": [
-                    axis_embedding_le_b64(2, 0.0),
-                    axis_embedding_le_b64(2, 0.05),
-                    axis_embedding_le_b64(2, 0.1),
-                ],
-                "previous_epoch": 0,
-            })
-            .to_string(),
-        ))
-        .unwrap();
-        let template_b64 = enroll_res["template_svt1_b64"].as_str().unwrap();
-
-        let request = json!({
-            "kind": "transfer",
-            "receiver": "alice.testnet",
-            "amount_yocto": "15000000000000000000000000",
-        });
-        let prep: Value = serde_json::from_str(&dispatch_json(
-            &json!({
-                "cmd": "prepare",
-                "owner": "bob.testnet",
-                "request": request,
-            })
-            .to_string(),
-        ))
-        .unwrap();
-        let sentence = prep["sentence"].as_str().unwrap();
-
-        let evaluated: Value = serde_json::from_str(&dispatch_json(
-            &json!({
-                "cmd": "evaluate_verify",
-                "owner": "bob.testnet",
-                "request": request,
-                "audio_digest_b64u": b64u(&[3u8; 32]),
-                "gate_passes": true,
-                "audio_reused": false,
-                "template_svt1_b64": template_b64,
-                "embedding_le_b64": axis_embedding_le_b64(2, 0.02),
-                "transcript": sentence,
-                "now_ms": 1_760_000_000_000u64,
-                "verifier_version": "sayso/0.1.0+mock",
-            })
-            .to_string(),
-        ))
-        .unwrap();
-        assert_eq!(evaluated["outcome"], "step_up");
-        assert_eq!(
-            evaluated["policy_text"],
-            "A voice payment above 10 NEAR needs a passkey."
-        );
-        let parsed: Value = serde_json::from_str(evaluated["verdict_json"].as_str().unwrap()).unwrap();
-        assert_eq!(parsed["verifier"], "sayso/0.1.0+mock");
+        let sig = signing_key.sign(&msg);
+        assert!(signing_key.verifying_key().verify(&msg, &sig).is_ok());
+        let parsed: Verdict =
+            serde_json::from_str(evaluated["verdict_json"].as_str().unwrap()).unwrap();
+        assert_eq!(parsed.kind, "sayso_verdict_v1");
+        assert_eq!(parsed.verifier, "sayso/0.2.0");
+        assert_eq!(parsed.user_id.as_deref(), Some("alice@acme.com"));
+        assert_eq!(parsed.heard, None);
     }
 }

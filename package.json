@@ -1,17 +1,17 @@
 {
   "name": "say-so",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "SaySo: low-latency Cloudflare-native spoken-intent authorization (Workers + Deepgram Nova-3 WebSocket + ReDimNet Container + SQLite Durable Objects).",
+  "description": "SaySo: low-latency Cloudflare-native spoken-intent authorization returning signed Ed25519 verdicts.",
   "scripts": {
     "build:wasm": "node scripts/build-wasm.mjs",
-    "build:packages": "pnpm --filter @seams/voice-verdict build && pnpm --filter @seams/sayso-client build",
+    "build:packages": "pnpm --filter @sayso/verdict build && pnpm --filter @sayso/client build",
     "build": "pnpm build:wasm && pnpm build:packages && pnpm --filter @sayso/demo build",
-    "test:rust": "cargo test --workspace && cargo test --manifest-path crates/voice-verdict/Cargo.toml && cargo test --manifest-path crates/speaker-service/Cargo.toml --lib",
-    "test:ts": "pnpm --filter @seams/voice-verdict test && pnpm --filter @seams/sayso-client test && pnpm --filter @sayso/verifier-worker test",
+    "test:rust": "cargo test --workspace && cargo test --manifest-path crates/speaker-service/Cargo.toml --lib",
+    "test:ts": "pnpm --filter @sayso/verdict test && pnpm --filter @sayso/client test && pnpm --filter @sayso/verifier-worker test",
     "test": "pnpm build:wasm && pnpm build:packages && pnpm test:rust && pnpm test:ts",
-    "typecheck": "pnpm --filter @seams/voice-verdict type-check && pnpm --filter @seams/sayso-client type-check && pnpm --filter @sayso/verifier-worker type-check && pnpm --filter @sayso/demo type-check",
+    "typecheck": "pnpm --filter @sayso/verdict type-check && pnpm --filter @sayso/client type-check && pnpm --filter @sayso/verifier-worker type-check && pnpm --filter @sayso/demo type-check",
     "dev:worker": "pnpm --filter @sayso/verifier-worker dev",
     "dev:demo": "pnpm --filter @sayso/demo dev"
   }

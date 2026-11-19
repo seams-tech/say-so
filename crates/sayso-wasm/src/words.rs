@@ -1,11 +1,9 @@
-//! Word check (Rule A), summary 1-word forgiveness with negation/number guards,
-//! compound-number hyphen normalization for Deepgram Nova-3, and streaming token progress.
-use spoken_intent::{
-    is_number_word, normalize_punctuated, spoken_text, SpokenAccount, SpokenRequestV1, SpokenToken,
-};
+//! Self-contained spoken-English transcript normalization, negation/number guards,
+//! 1-word forgiveness on 4+ word sentences, and streaming prefix matching.
 
 pub const MAX_HEARD_BYTES: usize = 200;
-const SUMMARY_FORGIVE_MIN_WORDS: usize = 4;
+pub const MAX_SENTENCE_WORDS: usize = 16;
+const FORGIVE_MIN_WORDS: usize = 4;
 
 const NEGATION_WORDS: [&str; 34] = [
     "not", "no", "never", "none", "nothing", "neither", "nor", "nobody", "nowhere", "without",
@@ -14,130 +12,243 @@ const NEGATION_WORDS: [&str; 34] = [
     "shant", "neednt", "mightnt", "oughtnt", "darent",
 ];
 
-const TENS_WORDS: [&str; 8] = [
-    "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
-];
-const ONES_WORDS: [&str; 9] = [
-    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+const NUMBER_WORDS: [&str; 33] = [
+    "zero", "oh", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen",
+    "nineteen", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+    "hundred", "thousand", "million", "point",
 ];
 
-/// Deepgram Nova-3 can hyphenate spoken English compound numbers ("forty-five").
-/// Split standalone `<tens>-<ones>` tokens before `normalize_punctuated` so `-` is not
-/// read as an account-id `"dash"`.
-fn split_compound_number_hyphens(transcript: &str) -> String {
-    transcript
-        .split_whitespace()
-        .map(|raw| {
-            let trimmed = raw.trim_matches(|c: char| matches!(c, '.' | ',' | '!' | '?' | ';' | ':'));
-            if let Some((left, right)) = trimmed.split_once('-') {
-                let l = left.to_ascii_lowercase();
-                let r = right.to_ascii_lowercase();
-                if TENS_WORDS.contains(&l.as_str()) && ONES_WORDS.contains(&r.as_str()) {
-                    return raw.replacen('-', " ", 1);
-                }
+const MONEY_SYMBOLS: [(char, &str, &str); 3] = [
+    ('$', "dollar", "dollars"),
+    ('\u{20ac}', "euro", "euros"),
+    ('\u{a3}', "pound", "pounds"),
+];
+
+pub fn is_number_word(word: &str) -> bool {
+    NUMBER_WORDS.contains(&word)
+}
+
+pub fn is_guarded_word(word: &str) -> bool {
+    is_number_word(word) || NEGATION_WORDS.contains(&word)
+}
+
+/// Normalizes a human-written prompt or STT transcript into canonical lowercase spoken tokens.
+/// Handles currency (`$45` -> `forty five dollars`), percentages (`10%` -> `ten percent`),
+/// decimals (`2.4` -> `two point four`), integers (`0..999_999`), contractions (`don't` -> `dont`),
+/// and hyphenated words (`forty-five` -> `forty five`).
+pub fn normalize_sentence_tokens(text: &str) -> Option<Vec<String>> {
+    let mut out = Vec::new();
+    for raw in text.split_whitespace() {
+        let trimmed = raw
+            .trim_matches(|c: char| matches!(c, ',' | '.' | '!' | '?' | ';' | ':' | '"' | '(' | ')'));
+        if trimmed.is_empty() {
+            continue;
+        }
+        let lower = trimmed.to_ascii_lowercase();
+
+        if let Some((_, one, many)) = MONEY_SYMBOLS.iter().find(|(sym, ..)| lower.starts_with(*sym))
+        {
+            let rest = &lower[lower.chars().next()?.len_utf8()..];
+            let expanded = expand_number_token(rest)?;
+            let is_one = rest.replace(',', "").trim_start_matches('0') == "1";
+            out.extend(expanded);
+            out.push(if is_one { one } else { many }.to_string());
+            continue;
+        }
+
+        if let Some(rest) = lower.strip_suffix('%') {
+            let expanded = expand_number_token(rest)?;
+            out.extend(expanded);
+            out.push("percent".to_string());
+            continue;
+        }
+
+        if let Some(expanded) = expand_number_token(&lower) {
+            out.extend(expanded);
+            continue;
+        }
+
+        for piece in lower.split(['-', '/']) {
+            if piece.is_empty() {
+                continue;
             }
-            raw.to_string()
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+            if let Some(expanded) = expand_number_token(piece) {
+                out.extend(expanded);
+                continue;
+            }
+            let cleaned: String = piece
+                .chars()
+                .filter(|c| c.is_ascii_alphabetic())
+                .collect();
+            if cleaned.is_empty() {
+                return None;
+            }
+            out.push(cleaned);
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn expand_number_token(token: &str) -> Option<Vec<String>> {
+    let compact = token.replace(',', "");
+    if compact.is_empty() {
+        return None;
+    }
+    if let Some((whole, frac)) = compact.split_once('.') {
+        if whole.is_empty()
+            || frac.is_empty()
+            || !whole.bytes().all(|b| b.is_ascii_digit())
+            || !frac.bytes().all(|b| b.is_ascii_digit())
+        {
+            return None;
+        }
+        let mut out = integer_to_words(whole.parse::<u64>().ok()?)?;
+        out.push("point".to_string());
+        for b in frac.bytes() {
+            out.push(digit_word(b - b'0').to_string());
+        }
+        return Some(out);
+    }
+    if !compact.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if compact.len() > 1 && compact.starts_with('0') {
+        return Some(
+            compact
+                .bytes()
+                .map(|b| digit_word(b - b'0').to_string())
+                .collect(),
+        );
+    }
+    integer_to_words(compact.parse::<u64>().ok()?)
+}
+
+fn digit_word(d: u8) -> &'static str {
+    match d {
+        0 => "zero",
+        1 => "one",
+        2 => "two",
+        3 => "three",
+        4 => "four",
+        5 => "five",
+        6 => "six",
+        7 => "seven",
+        8 => "eight",
+        _ => "nine",
+    }
+}
+
+fn integer_to_words(n: u64) -> Option<Vec<String>> {
+    if n >= 1_000_000 {
+        return None;
+    }
+    if n == 0 {
+        return Some(vec!["zero".to_string()]);
+    }
+    let mut out = Vec::new();
+    let thousands = n / 1_000;
+    let remainder = n % 1_000;
+    if thousands > 0 {
+        push_under_thousand(thousands, &mut out);
+        out.push("thousand".to_string());
+    }
+    if remainder > 0 {
+        push_under_thousand(remainder, &mut out);
+    }
+    Some(out)
+}
+
+fn push_under_thousand(n: u64, out: &mut Vec<String>) {
+    const BELOW_TWENTY: [&str; 20] = [
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen",
+        "nineteen",
+    ];
+    const TENS: [&str; 10] = [
+        "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+    ];
+    let hundreds = n / 100;
+    let rem = n % 100;
+    if hundreds > 0 {
+        out.push(BELOW_TWENTY[hundreds as usize].to_string());
+        out.push("hundred".to_string());
+    }
+    if rem >= 20 {
+        out.push(TENS[(rem / 10) as usize].to_string());
+        if rem % 10 > 0 {
+            out.push(BELOW_TWENTY[(rem % 10) as usize].to_string());
+        }
+    } else if rem > 0 {
+        out.push(BELOW_TWENTY[rem as usize].to_string());
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct WordCheck {
     pub heard: String,
     pub heard_tokens: Vec<String>,
-    pub matched: bool,
-    pub distance: Option<usize>,
-    pub margin_milli: Option<i32>,
+    pub matched_exact: bool,
+    pub passes: bool,
+    pub matched_prefix_count: usize,
 }
 
-pub fn check_words(
-    transcript: &str,
-    contacts: &[SpokenAccount],
-    expected: &[SpokenToken],
-    confusions: &[Vec<SpokenToken>],
-) -> WordCheck {
-    let precleaned = split_compound_number_hyphens(transcript);
-    let Ok(tokens) = normalize_punctuated(&precleaned, contacts) else {
+pub fn check_words(transcript: &str, expected: &[String]) -> WordCheck {
+    let Some(heard_tokens) = normalize_sentence_tokens(transcript) else {
         return WordCheck {
             heard: cut_at(&printable(transcript), MAX_HEARD_BYTES),
             heard_tokens: Vec::new(),
-            matched: false,
-            distance: None,
-            margin_milli: None,
+            matched_exact: false,
+            passes: false,
+            matched_prefix_count: 0,
         };
     };
-    let heard_tokens: Vec<String> = tokens.iter().map(|t| t.as_str().to_string()).collect();
-    let heard_words: Vec<&str> = tokens.iter().map(SpokenToken::as_str).collect();
-    let expected_words: Vec<&str> = expected.iter().map(SpokenToken::as_str).collect();
-    let to_expected = edit_distance(&heard_words, &expected_words);
-    let to_near_miss = confusions
-        .iter()
-        .map(|variant| {
-            let words: Vec<&str> = variant.iter().map(SpokenToken::as_str).collect();
-            edit_distance(&heard_words, &words)
-        })
-        .min();
-    let margin_milli = match to_near_miss {
-        Some(near) if !expected.is_empty() => {
-            Some(((near as i64 - to_expected as i64) * 1_000 / expected.len() as i64) as i32)
-        }
-        _ => None,
-    };
-    WordCheck {
-        heard: cut_at(&spoken_text(&tokens), MAX_HEARD_BYTES),
-        heard_tokens,
-        matched: tokens.as_slice() == expected,
-        distance: Some(to_expected),
-        margin_milli,
-    }
-}
 
-pub fn is_summary_request(request: &SpokenRequestV1) -> bool {
-    matches!(
-        request,
-        SpokenRequestV1::CommunityNote { .. }
-            | SpokenRequestV1::Transaction { .. }
-            | SpokenRequestV1::SignedMessage { .. }
-            | SpokenRequestV1::Confirmation { .. }
-    )
-}
-
-pub fn words_pass(request: &SpokenRequestV1, check: &WordCheck, expected: &[SpokenToken]) -> bool {
-    if check.matched {
-        return true;
-    }
-    let heard: Vec<&str> = check.heard.split_whitespace().collect();
-    let at = expected
+    let matched_prefix_count = expected
         .iter()
-        .zip(&heard)
-        .take_while(|(want, got)| want.as_str() == **got)
+        .zip(&heard_tokens)
+        .take_while(|(want, got)| want == got)
         .count();
-    let guarded = |word: Option<&str>| {
-        word.is_some_and(|w| is_number_word(w) || NEGATION_WORDS.contains(&w))
+    let matched_exact = heard_tokens == expected;
+
+    let passes = if matched_exact {
+        true
+    } else if expected.len() >= FORGIVE_MIN_WORDS {
+        let dist = edit_distance(&heard_tokens, expected);
+        if dist == 1 && heard_tokens.len() <= expected.len() {
+            let at = matched_prefix_count;
+            let expected_at = expected.get(at).map(String::as_str);
+            let heard_at = heard_tokens.get(at).map(String::as_str);
+            let guarded_touched = match heard_tokens.len().cmp(&expected.len()) {
+                std::cmp::Ordering::Less => expected_at.is_some_and(is_guarded_word),
+                std::cmp::Ordering::Equal => {
+                    expected_at.is_some_and(is_guarded_word)
+                        || heard_at.is_some_and(is_guarded_word)
+                }
+                std::cmp::Ordering::Greater => true,
+            };
+            !guarded_touched
+        } else {
+            false
+        }
+    } else {
+        false
     };
-    let said = expected.get(at).map(SpokenToken::as_str);
-    let has_guarded = match heard.len().cmp(&expected.len()) {
-        std::cmp::Ordering::Less => guarded(said),
-        std::cmp::Ordering::Greater => guarded(heard.get(at).copied()),
-        std::cmp::Ordering::Equal => guarded(said) || guarded(heard.get(at).copied()),
-    };
-    is_summary_request(request)
-        && !has_guarded
-        && expected.len() >= SUMMARY_FORGIVE_MIN_WORDS
-        && check.distance == Some(1)
-        && check.margin_milli.is_some_and(|margin| margin > 0)
+
+    WordCheck {
+        heard: cut_at(&heard_tokens.join(" "), MAX_HEARD_BYTES),
+        heard_tokens,
+        matched_exact,
+        passes,
+        matched_prefix_count,
+    }
 }
 
-pub fn matched_prefix_count(expected: &[SpokenToken], heard_tokens: &[String]) -> usize {
-    expected
-        .iter()
-        .zip(heard_tokens)
-        .take_while(|(want, got)| want.as_str() == got.as_str())
-        .count()
-}
-
-fn edit_distance(left: &[&str], right: &[&str]) -> usize {
+fn edit_distance(left: &[String], right: &[String]) -> usize {
     let mut previous: Vec<usize> = (0..=right.len()).collect();
     for (row, left_word) in left.iter().enumerate() {
         let mut next = Vec::with_capacity(right.len() + 1);

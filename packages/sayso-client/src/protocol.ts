@@ -1,48 +1,22 @@
-export type SaySoRequestInput =
-  | { kind: 'confirmation'; context: string; payload_sha256_hex: string; summary: string }
-  | { kind: 'transfer'; receiver: string; amount_yocto: string }
-  | { kind: 'community_note'; contract: string; post_id: number; note_text: string; summary: string }
-  | { kind: 'note_rating'; contract: string; note_id: number; rating: 'helpful' | 'somewhat_helpful' | 'not_helpful' }
-  | {
-      kind: 'market_bet';
-      market: string;
-      token: string;
-      market_id: number;
-      outcome: 'yes' | 'no';
-      amount_units: string;
-    }
-  | {
-      kind: 'merge_approval';
-      contract: string;
-      repo_sha256_hex: string;
-      pull_request: number;
-      base: string;
-      head_commit_hex: string;
-    }
-  | { kind: 'transaction'; receiver: string; actions_sha256_hex: string; summary: string }
-  | { kind: 'signed_message'; payload_sha256_hex: string; summary: string }
-  | { kind: 'multisig_propose'; multisig: string; proposal_id: number; receiver: string; amount_yocto: string }
-  | { kind: 'multisig_hide_note'; multisig: string; proposal_id: number; note_id: number }
-  | { kind: 'multisig_confirm'; multisig: string; proposal_id: number; commitment_hex: string };
+import type { SaySoIntentInput } from '@sayso/verdict';
 
 export interface VerifyWireOutput {
-  kind: 'seams_voice_verify_output_v2';
+  kind: 'sayso_verify_output_v1';
   verdict_json: string;
   signature_b64: string | null;
-  public_key: string | null;
-  policy_text: string | null;
+  /** Standard 64-character lowercase hex Ed25519 public key. */
+  public_key_hex: string | null;
   ms: Record<string, number>;
   detail: string | null;
-  multisig?: { commitment: string; salt: string };
 }
 
 export interface EnrollWireOutput {
-  kind: 'seams_voice_enrollment_v3';
+  kind: 'sayso_enrollment_v1';
   outcome: 'accept' | 'refuse';
   reason: string | null;
   template_epoch: number | null;
   agreement_milli: number | null;
-  verifier_public_key: string;
+  verifier_public_key_hex: string;
   ms: Record<string, number>;
 }
 
@@ -51,26 +25,22 @@ export interface RenderWireOutput {
   sentence?: string;
   display_text?: string;
   expected_tokens?: string[];
-  request_digest_b64u?: string;
-  spoken_text_digest_b64u?: string | null;
-  recalled?: boolean;
-  is_summary?: boolean;
+  intent_digest_b64u?: string;
+  spoken_text_digest_b64u?: string;
   reason?: string;
 }
 
 export type StreamClientMessage =
   | {
       type: 'init';
-      owner: string;
-      request: SaySoRequestInput;
-      contacts?: string[];
+      intent: SaySoIntentInput;
     }
   | {
       type: 'end';
       clientSpeechEndedAtMs?: number;
     }
   | {
-      /** Ignored unless Worker has opt-in `SAYSO_DEV_MOCK=true`. */
+      /** Ignored unless Worker runs with opt-in `SAYSO_DEV_MOCK=true`. */
       type: 'mock_transcript';
       transcript: string;
       isFinal: boolean;
@@ -83,8 +53,7 @@ export type StreamServerMessage =
       sentence: string;
       displayText: string;
       expectedTokens: string[];
-      requestDigestB64u: string;
-      recalled: boolean;
+      intentDigestB64u: string;
       mock: boolean;
     }
   | {

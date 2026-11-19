@@ -1,0 +1,26 @@
+{
+  "name": "@sayso/verdict",
+  "version": "0.2.0",
+  "type": "module",
+  "description": "Zero-dependency WebCrypto Ed25519 verifier and intent digest builder for SaySo signed verdicts (`sayso_verdict_v1`).",
+  "license": "Apache-2.0",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "type-check": "tsc --noEmit",
+    "test": "node --test tests/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^24.2.0",
+    "typescript": "^5.9.3"
+  }
+}

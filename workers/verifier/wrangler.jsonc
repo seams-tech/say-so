@@ -20,10 +20,6 @@
         "class_name": "AccountVoiceDO"
       },
       {
-        "name": "MULTISIG_PROPOSAL",
-        "class_name": "MultisigProposalDO"
-      },
-      {
         "name": "SPEAKER_CONTAINER",
         "class_name": "SpeakerContainer"
       }
@@ -42,7 +38,6 @@
       "tag": "v1",
       "new_sqlite_classes": [
         "AccountVoiceDO",
-        "MultisigProposalDO",
         "SpeakerContainer"
       ]
     }

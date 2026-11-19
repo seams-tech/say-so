@@ -1,8 +1,8 @@
 /**
  * WebCrypto Ed25519 verdict signer (`extractable: false`) + speaker-embedding signature check.
+ * Standard hex/bytes Ed25519 only — zero chain-specific key encoding.
  */
 
-const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
 const SPEAKER_EMBED_DOMAIN = new TextEncoder().encode('seams:speaker-embedding:v1');
 
 /** Standard PKCS#8 ASN.1 prefix for a 32-byte Ed25519 private seed (RFC 8410). */
@@ -12,7 +12,7 @@ const ED25519_PKCS8_PREFIX = new Uint8Array([
 ]);
 
 export interface VerdictSigner {
-  readonly publicKeyNear: string;
+  readonly publicKeyHex: string;
   readonly publicKeyBytes: Uint8Array;
   signMessageB64(messageB64: string): Promise<string>;
 }
@@ -50,32 +50,9 @@ export function toBase64(bytes: Uint8Array): string {
   return btoa(bin);
 }
 
-export function encodeBase58(bytes: Uint8Array): string {
-  let zeros = 0;
-  while (zeros < bytes.length && bytes[zeros] === 0) zeros += 1;
-  const digits: number[] = [];
-  for (let i = zeros; i < bytes.length; i += 1) {
-    let carry = bytes[i];
-    for (let j = 0; j < digits.length; j += 1) {
-      carry += digits[j] << 8;
-      digits[j] = carry % 58;
-      carry = Math.floor(carry / 58);
-    }
-    while (carry > 0) {
-      digits.push(carry % 58);
-      carry = Math.floor(carry / 58);
-    }
-  }
-  let out = '1'.repeat(zeros);
-  for (let i = digits.length - 1; i >= 0; i -= 1) {
-    out += BASE58_ALPHABET[digits[i]];
-  }
-  return out;
-}
-
 /**
  * Imports a 32-byte hex Ed25519 seed into WebCrypto as a non-extractable signing key,
- * and derives its `ed25519:<base58>` public key.
+ * and derives its standard 64-character lowercase hex Ed25519 public key.
  */
 export async function createVerdictSignerFromSeedHex(seedHex: string): Promise<VerdictSigner> {
   const seed = fromHex(seedHex);
@@ -86,8 +63,6 @@ export async function createVerdictSignerFromSeedHex(seedHex: string): Promise<V
   pkcs8.set(ED25519_PKCS8_PREFIX, 0);
   pkcs8.set(seed, ED25519_PKCS8_PREFIX.length);
 
-  // Import once extractable strictly to derive the JWK `x` public key coordinate,
-  // then wipe raw seed bytes and hold only a non-extractable CryptoKey in memory.
   const tempKey = await crypto.subtle.importKey('pkcs8', pkcs8, { name: 'Ed25519' }, true, ['sign']);
   const jwk = (await crypto.subtle.exportKey('jwk', tempKey)) as JsonWebKey;
   pkcs8.fill(0);
@@ -97,7 +72,7 @@ export async function createVerdictSignerFromSeedHex(seedHex: string): Promise<V
   }
   const b64 = jwk.x.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(jwk.x.length / 4) * 4, '=');
   const publicKeyBytes = fromBase64(b64);
-  const publicKeyNear = `ed25519:${encodeBase58(publicKeyBytes)}`;
+  const publicKeyHex = toHex(publicKeyBytes);
 
   const privateKey = await crypto.subtle.importKey(
     'jwk',
@@ -108,7 +83,7 @@ export async function createVerdictSignerFromSeedHex(seedHex: string): Promise<V
   );
 
   return {
-    publicKeyNear,
+    publicKeyHex,
     publicKeyBytes,
     async signMessageB64(messageB64: string): Promise<string> {
       const msg = fromBase64(messageB64);

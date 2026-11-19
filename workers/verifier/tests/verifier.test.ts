@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { pcm16ToCanonicalWav, pcm16ToLeBytes, toBase64, type StreamServerMessage } from '@seams/sayso-client';
-import { audioDigest, checkVerdict, confirmationRequest } from '@seams/voice-verdict';
+import { pcm16ToLeBytes, toBase64, type StreamServerMessage } from '@sayso/client';
+import { audioDigest, createIntent, pcm16ToCanonicalWav, verifyVerdict } from '@sayso/verdict';
 import type { StoredVoiceTemplate, VoiceStore } from '../src/accountVoiceDo.ts';
 import { createVerdictSignerFromSeedHex } from '../src/crypto.ts';
 import { SaySoEngine } from '../src/engine.ts';
@@ -13,7 +13,6 @@ import {
   createMockSttProvider,
   MOCK_VERIFIER_VERSION,
 } from '../src/mockDev.ts';
-import { MULTISIG_MAX_TRIES, type MultisigStore, type StoredMultisigOpening } from '../src/multisigProposalDo.ts';
 import type { SpeakerClient } from '../src/speaker.ts';
 import type { SttProvider, SttTranscriptEvent } from '../src/stt.ts';
 import { SaySoCore } from '../src/wasm.ts';
@@ -39,74 +38,34 @@ function makeToneSamples(ms: number, freqStep = 0.09): Int16Array {
   return out;
 }
 
-function createInMemoryStores(): { voiceStore: VoiceStore; multisigStore: MultisigStore } {
+function createInMemoryVoiceStore(): VoiceStore {
   const templates = new Map<string, StoredVoiceTemplate>();
   const usedAudio = new Map<string, Set<string>>();
-  const openings = new Map<string, StoredMultisigOpening>();
-  const tries = new Map<string, number>();
-  const signers = new Map<string, Map<string, string>>();
 
   return {
-    voiceStore: {
-      async getTemplate(owner) {
-        return templates.get(owner) ?? null;
-      },
-      async saveTemplate(owner, epoch, templateSvt1B64) {
-        templates.set(owner, { epoch, templateSvt1B64 });
-      },
-      async consumeAudioAndGetTemplate(owner, audioDigestB64u) {
-        let set = usedAudio.get(owner);
-        if (!set) {
-          set = new Set();
-          usedAudio.set(owner, set);
-        }
-        const audioReused = set.has(audioDigestB64u);
-        set.add(audioDigestB64u);
-        return { audioReused, template: templates.get(owner) ?? null };
-      },
+    async getTemplate(userId) {
+      return templates.get(userId) ?? null;
     },
-    multisigStore: {
-      async saveProposal(multisig, commitmentHex, opening, proposer, proposerTemplateSvt1B64) {
-        const key = `${multisig}:${commitmentHex}`;
-        openings.set(key, opening);
-        const map = new Map<string, string>();
-        map.set(proposer, proposerTemplateSvt1B64);
-        signers.set(key, map);
-      },
-      async prepareConfirm(multisig, commitmentHex, member) {
-        const key = `${multisig}:${commitmentHex}`;
-        const opening = openings.get(key) ?? null;
-        const count = tries.get(`${key}:${member}`) ?? 0;
-        const map = signers.get(key);
-        const otherSignerTemplatesB64: string[] = [];
-        if (map) {
-          for (const [m, svt1] of map.entries()) {
-            if (m !== member) otherSignerTemplatesB64.push(svt1);
-          }
-        }
-        return { opening, attemptsExhausted: count >= MULTISIG_MAX_TRIES, otherSignerTemplatesB64 };
-      },
-      async recordConfirmOutcome(multisig, commitmentHex, member, outcome, memberTemplateSvt1B64) {
-        const key = `${multisig}:${commitmentHex}`;
-        if (outcome === 'words_refusal') {
-          tries.set(`${key}:${member}`, (tries.get(`${key}:${member}`) ?? 0) + 1);
-        } else {
-          let map = signers.get(key);
-          if (!map) {
-            map = new Map();
-            signers.set(key, map);
-          }
-          map.set(member, memberTemplateSvt1B64);
-        }
-      },
+    async saveTemplate(userId, epoch, templateSvt1B64) {
+      templates.set(userId, { epoch, templateSvt1B64 });
+    },
+    async consumeAudioAndGetTemplate(userId, audioDigestB64u) {
+      let set = usedAudio.get(userId);
+      if (!set) {
+        set = new Set();
+        usedAudio.set(userId, set);
+      }
+      const audioReused = set.has(audioDigestB64u);
+      set.add(audioDigestB64u);
+      return { audioReused, template: templates.get(userId) ?? null };
     },
   };
 }
 
-test('SaySo streaming early-close, trailing negation guard, replay guard, and multisig same_speaker', async () => {
+test('SaySo streaming early-close, trailing negation guard, replay guard, and @sayso/verdict check', async () => {
   const wasm = await SaySoCore.fromBytes(wasmBytes);
   const signer = await createVerdictSignerFromSeedHex('22'.repeat(32));
-  const { voiceStore, multisigStore } = createInMemoryStores();
+  const voiceStore = createInMemoryVoiceStore();
 
   let currentAxis = 0;
   let emitTranscript: ((ev: SttTranscriptEvent) => void) | null = null;
@@ -138,34 +97,31 @@ test('SaySo streaming early-close, trailing negation guard, replay guard, and mu
     wasm,
     signer,
     voiceStore,
-    multisigStore,
     speaker,
     stt,
     earlyCloseGuardMs: 40,
   });
 
-  // 1. Enroll `app:alice`
+  // 1. Enroll `alice@acme.com`
   const clip1 = pcm16ToCanonicalWav(makeToneSamples(900, 0.08));
   const clip2 = pcm16ToCanonicalWav(makeToneSamples(950, 0.09));
   const clip3 = pcm16ToCanonicalWav(makeToneSamples(1_000, 0.1));
-  const enrolled = await engine.enroll('app:alice', [toBase64(clip1), toBase64(clip2), toBase64(clip3)]);
+  const enrolled = await engine.enroll('alice@acme.com', [toBase64(clip1), toBase64(clip2), toBase64(clip3)]);
   assert.equal(enrolled.outcome, 'accept');
   assert.equal(enrolled.template_epoch, 1);
 
   // 2. Stream live PCM + token-matched early-close!
-  const conf = await confirmationRequest({
-    owner: 'app:alice',
-    context: 'stripe/payout',
-    payload: new TextEncoder().encode('{"amount":45,"currency":"USD"}'),
-    summary: 'approve payout forty five dollars',
+  const built = await createIntent({
+    userId: 'alice@acme.com',
+    action: 'stripe/payout',
+    payload: '{"amount":45,"currency":"USD"}',
+    sentence: 'Approve payout $45',
   });
 
-  const messages: StreamServerMessage[] = [];
   let closed = false;
   const donePromise = new Promise<Extract<StreamServerMessage, { type: 'verdict' }>>((resolve) => {
     const session = engine.attachStreamSession(
       (msg) => {
-        messages.push(msg);
         if (msg.type === 'verdict') resolve(msg);
       },
       () => {
@@ -174,12 +130,12 @@ test('SaySo streaming early-close, trailing negation guard, replay guard, and mu
     );
 
     void (async () => {
-      await session.onTextMessage(JSON.stringify({ type: 'init', owner: conf.owner, request: conf.request }));
+      await session.onTextMessage(JSON.stringify({ type: 'init', intent: built.intent }));
       const fullSamples = makeToneSamples(1_000, 0.11);
       for (let offset = 0; offset < fullSamples.length; offset += 800) {
         session.onBinaryChunk(pcm16ToLeBytes(fullSamples.subarray(offset, offset + 800)));
       }
-      // Verify mock_transcript is strictly ignored when mockMode is false:
+      // mock_transcript must be strictly ignored when mockMode is false:
       await session.onTextMessage(
         JSON.stringify({ type: 'mock_transcript', transcript: 'wrong words', isFinal: true, speechFinal: true }),
       );
@@ -194,37 +150,39 @@ test('SaySo streaming early-close, trailing negation guard, replay guard, and mu
   assert.equal(verdictMsg.sampleCount, 16_000);
 
   const clientWav = pcm16ToCanonicalWav(makeToneSamples(1_000, 0.11), verdictMsg.sampleCount);
-  const checked = await checkVerdict({
+  const checked = await verifyVerdict({
     verdictJson: verdictMsg.output.verdict_json,
     signatureB64: verdictMsg.output.signature_b64!,
-    publicKey: signer.publicKeyNear,
-    requestDigest: conf.digest,
+    publicKey: signer.publicKeyHex,
+    userId: 'alice@acme.com',
+    action: 'stripe/payout',
+    intentDigest: built.intentDigest,
+    spokenTextDigest: built.spokenTextDigest,
     audioDigest: await audioDigest(clientWav),
   });
   assert.equal(checked.ok, true);
   if (checked.ok) {
     assert.equal(checked.verdict.outcome, 'accept');
-    assert.equal(checked.verdict.verifier, 'sayso/0.1.0');
+    assert.equal(checked.verdict.verifier, 'sayso/0.2.0');
   }
 
-  // 3. Replaying the exact same audio over batch HTTP refuses with `audio_reused`!
+  // 3. Replaying the exact same audio refuses with `audio_reused`!
   batchText = 'Approve payout $45.';
   const replayed = await engine.verifyBatch({
-    owner: conf.owner,
-    request: conf.request,
+    intent: built.intent,
     audioWavB64: toBase64(clientWav),
   });
-  const checkedReplay = await checkVerdict({
+  const checkedReplay = await verifyVerdict({
     verdictJson: replayed.verdict_json,
     signatureB64: replayed.signature_b64!,
-    publicKey: signer.publicKeyNear,
+    publicKey: signer.publicKeyHex,
   });
   assert.equal(checkedReplay.ok, false);
   if (!checkedReplay.ok && checkedReplay.refusal.code === 'refused') {
     assert.equal(checkedReplay.refusal.reason, 'audio_reused');
   }
 
-  // 4. Trailing negation within the 40 ms guard window cancels early-close and refuses with `words`!
+  // 4. Trailing negation within the guard window cancels early-close and refuses with `words`!
   const negationPromise = new Promise<Extract<StreamServerMessage, { type: 'verdict' }>>((resolve) => {
     const session = engine.attachStreamSession(
       (msg) => {
@@ -233,7 +191,7 @@ test('SaySo streaming early-close, trailing negation guard, replay guard, and mu
       () => {},
     );
     void (async () => {
-      await session.onTextMessage(JSON.stringify({ type: 'init', owner: conf.owner, request: conf.request }));
+      await session.onTextMessage(JSON.stringify({ type: 'init', intent: built.intent }));
       const samples = makeToneSamples(1_100, 0.13);
       session.onBinaryChunk(pcm16ToLeBytes(samples));
       emitTranscript!({ transcript: 'Approve payout 45 dollars', isFinal: false, speechFinal: false });
@@ -244,10 +202,10 @@ test('SaySo streaming early-close, trailing negation guard, replay guard, and mu
 
   const negatedMsg = await negationPromise;
   assert.equal(negatedMsg.closedBy, 'stt_speech_final');
-  const checkedNegated = await checkVerdict({
+  const checkedNegated = await verifyVerdict({
     verdictJson: negatedMsg.output.verdict_json,
     signatureB64: negatedMsg.output.signature_b64!,
-    publicKey: signer.publicKeyNear,
+    publicKey: signer.publicKeyHex,
   });
   assert.equal(checkedNegated.ok, false);
   if (!checkedNegated.ok && checkedNegated.refusal.code === 'refused') {
@@ -255,67 +213,32 @@ test('SaySo streaming early-close, trailing negation guard, replay guard, and mu
     assert.equal(checkedNegated.refusal.verdict.heard, 'approve payout forty five dollars not');
   }
 
-  // 5. Multisig `same_speaker` defense: signer 2 enrolled with same voice as signer 1 is refused!
-  currentAxis = 5;
-  await engine.enroll('s1.testnet', [
-    toBase64(pcm16ToCanonicalWav(makeToneSamples(900, 0.14))),
-    toBase64(pcm16ToCanonicalWav(makeToneSamples(920, 0.15))),
-    toBase64(pcm16ToCanonicalWav(makeToneSamples(940, 0.16))),
-  ]);
-  await engine.enroll('s2.testnet', [
-    toBase64(pcm16ToCanonicalWav(makeToneSamples(900, 0.17))),
-    toBase64(pcm16ToCanonicalWav(makeToneSamples(920, 0.18))),
-    toBase64(pcm16ToCanonicalWav(makeToneSamples(940, 0.19))),
-  ]);
-
-  const proposeReq = {
-    kind: 'multisig_propose' as const,
-    multisig: 'ms.testnet',
-    proposal_id: 1,
-    receiver: 'bob.testnet',
-    amount_yocto: '2000000000000000000000000',
-  };
-  const renderedPropose = engine.render('s1.testnet', proposeReq);
-  batchText = renderedPropose.sentence!;
-  const proposed = await engine.verifyBatch({
-    owner: 's1.testnet',
-    request: proposeReq,
-    audioWavB64: toBase64(pcm16ToCanonicalWav(makeToneSamples(950, 0.21))),
+  // 5. Wrong speaker voice is refused with `speaker`!
+  currentAxis = 10;
+  const imposter = await engine.verifyBatch({
+    intent: built.intent,
+    audioWavB64: toBase64(pcm16ToCanonicalWav(makeToneSamples(950, 0.17))),
   });
-  assert.ok(proposed.multisig?.commitment);
-  const commitmentHex = Buffer.from(proposed.multisig.commitment, 'base64url').toString('hex');
-
-  const sameVoiceConfirm = await engine.verifyBatch({
-    owner: 's2.testnet',
-    request: {
-      kind: 'multisig_confirm',
-      multisig: 'ms.testnet',
-      proposal_id: 1,
-      commitment_hex: commitmentHex,
-    },
-    audioWavB64: toBase64(pcm16ToCanonicalWav(makeToneSamples(950, 0.22))),
+  const checkedImposter = await verifyVerdict({
+    verdictJson: imposter.verdict_json,
+    signatureB64: imposter.signature_b64!,
+    publicKey: signer.publicKeyHex,
   });
-  const checkedSameSpeaker = await checkVerdict({
-    verdictJson: sameVoiceConfirm.verdict_json,
-    signatureB64: sameVoiceConfirm.signature_b64!,
-    publicKey: signer.publicKeyNear,
-  });
-  assert.equal(checkedSameSpeaker.ok, false);
-  if (!checkedSameSpeaker.ok && checkedSameSpeaker.refusal.code === 'refused') {
-    assert.equal(checkedSameSpeaker.refusal.reason, 'same_speaker');
+  assert.equal(checkedImposter.ok, false);
+  if (!checkedImposter.ok && checkedImposter.refusal.code === 'refused') {
+    assert.equal(checkedImposter.refusal.reason, 'speaker');
   }
 });
 
-test('Opt-in SAYSO_DEV_MOCK=true offline mode enrolls spectral voiceprint and signs sayso/0.1.0+mock verdicts', async () => {
+test('Opt-in SAYSO_DEV_MOCK=true offline mode enrolls spectral voiceprint and signs sayso/0.2.0+mock verdicts', async () => {
   const wasm = await SaySoCore.fromBytes(wasmBytes);
   const signer = await createVerdictSignerFromSeedHex('33'.repeat(32));
-  const { voiceStore, multisigStore } = createInMemoryStores();
+  const voiceStore = createInMemoryVoiceStore();
 
   const mockEngine = new SaySoEngine({
     wasm,
     signer,
     voiceStore,
-    multisigStore,
     speaker: createMockSpectralSpeakerClient(),
     stt: createMockSttProvider(),
     mockMode: true,
@@ -323,19 +246,18 @@ test('Opt-in SAYSO_DEV_MOCK=true offline mode enrolls spectral voiceprint and si
     earlyCloseGuardMs: 30,
   });
 
-  // Enroll with 3 consistent offline tone clips (same spectral signature)
-  const enrolled = await mockEngine.enroll('app:offline-dev', [
+  const enrolled = await mockEngine.enroll('usr_offline', [
     toBase64(pcm16ToCanonicalWav(makeToneSamples(850, 0.12))),
     toBase64(pcm16ToCanonicalWav(makeToneSamples(900, 0.121))),
     toBase64(pcm16ToCanonicalWav(makeToneSamples(950, 0.119))),
   ]);
   assert.equal(enrolled.outcome, 'accept');
 
-  const conf = await confirmationRequest({
-    owner: 'app:offline-dev',
-    context: 'github/deploy',
-    payload: new TextEncoder().encode('{"release":"2.4"}'),
-    summary: 'deploy release two four to production',
+  const built = await createIntent({
+    userId: 'usr_offline',
+    action: 'github/deploy',
+    payload: '{"release":"2.4"}',
+    sentence: 'Deploy release 2.4 to production',
   });
 
   const mockResult = await new Promise<Extract<StreamServerMessage, { type: 'verdict' }>>((resolve) => {
@@ -346,13 +268,13 @@ test('Opt-in SAYSO_DEV_MOCK=true offline mode enrolls spectral voiceprint and si
       () => {},
     );
     void (async () => {
-      await session.onTextMessage(JSON.stringify({ type: 'init', owner: conf.owner, request: conf.request }));
+      await session.onTextMessage(JSON.stringify({ type: 'init', intent: built.intent }));
       const livePcm = makeToneSamples(920, 0.12);
       session.onBinaryChunk(pcm16ToLeBytes(livePcm));
       await session.onTextMessage(
         JSON.stringify({
           type: 'mock_transcript',
-          transcript: 'Deploy release 2 4 to production.',
+          transcript: 'Deploy release two point four to production.',
           isFinal: true,
           speechFinal: false,
         }),
@@ -361,14 +283,14 @@ test('Opt-in SAYSO_DEV_MOCK=true offline mode enrolls spectral voiceprint and si
   });
 
   assert.equal(mockResult.closedBy, 'token_match');
-  const checked = await checkVerdict({
+  const checked = await verifyVerdict({
     verdictJson: mockResult.output.verdict_json,
     signatureB64: mockResult.output.signature_b64!,
-    publicKey: signer.publicKeyNear,
-    requestDigest: conf.digest,
+    publicKey: signer.publicKeyHex,
+    intentDigest: built.intentDigest,
   });
   assert.equal(checked.ok, true);
   if (checked.ok) {
-    assert.equal(checked.verdict.verifier, 'sayso/0.1.0+mock');
+    assert.equal(checked.verdict.verifier, 'sayso/0.2.0+mock');
   }
 });

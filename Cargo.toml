@@ -1,11 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
-  "crates/spoken-intent",
   "crates/sayso-wasm",
 ]
 exclude = [
-  "crates/voice-verdict",
   "crates/speaker-service",
 ]
 

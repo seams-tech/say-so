@@ -1,10 +1,10 @@
 [package]
 name = "sayso-wasm"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.85"
 publish = false
-description = "SaySo pure WASM core: spoken-intent grammar, streaming word matcher, SVT1 speaker templates, and v2 verdict builder"
+description = "SaySo pure WASM core: spoken-intent normalization, streaming word matcher, SVT1 speaker templates, and Ed25519 verdict builder (zero Web3/chain dependencies)"
 license = "Apache-2.0"
 
 [lib]
@@ -17,8 +17,6 @@ base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"
-spoken-intent = { path = "../spoken-intent" }
 
 [dev-dependencies]
 ed25519-dalek = "2"
-seams-voice-verdict = { path = "../voice-verdict" }

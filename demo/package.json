@@ -1,7 +1,7 @@
 {
   "name": "@sayso/demo",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite --port 5179",
@@ -10,8 +10,8 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@seams/sayso-client": "workspace:*",
-    "@seams/voice-verdict": "workspace:*",
+    "@sayso/client": "workspace:*",
+    "@sayso/verdict": "workspace:*",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

@@ -2,19 +2,14 @@
  * Opt-in offline development providers (`SAYSO_DEV_MOCK=true` in `.dev.vars`).
  *
  * Never enabled in production. Verdicts issued under this mode are tagged
- * `"verifier": "sayso/0.1.0+mock"` inside the signed `seams_voice_signed_verdict_v2` JSON.
+ * `"verifier": "sayso/0.2.0+mock"` inside the signed `sayso_verdict_v1` JSON.
  */
 import { fromBase64, toBase64 } from './crypto.ts';
 import type { SpeakerClient } from './speaker.ts';
 import type { SttProvider, SttTranscriptEvent } from './stt.ts';
 
-export const MOCK_VERIFIER_VERSION = 'sayso/0.1.0+mock';
+export const MOCK_VERIFIER_VERSION = 'sayso/0.2.0+mock';
 
-/**
- * Computes a deterministic 192-float spectral/autocorrelation profile directly from the
- * canonical 16 kHz mono PCM16 WAV so offline local voice enrollment and live microphone
- * verification work without Docker, while rejecting silence or wildly different signals.
- */
 export function createMockSpectralSpeakerClient(): SpeakerClient {
   return {
     async embed(canonicalWavB64: string) {
@@ -30,9 +25,6 @@ export function createMockSpectralSpeakerClient(): SpeakerClient {
         samples[i] = view.getInt16(i * 2, true) / 32_768;
       }
 
-      // Compute 192-dim normalized short-lag autocorrelation + zero-crossing spectral profile.
-      // Lags 1..192 capture vocal pitch & formant envelope consistently across clips of the
-      // same speaker while distinguishing different spectral signatures.
       const features = new Float32Array(192);
       let energy = 0;
       for (let i = 0; i < sampleCount; i += 1) {
@@ -65,19 +57,13 @@ export function createMockSpectralSpeakerClient(): SpeakerClient {
   };
 }
 
-/**
- * Offline streaming STT provider that accepts browser `SpeechRecognition` or simulated
- * `{ type: "mock_transcript" }` frames forwarded by the Worker ONLY when `SAYSO_DEV_MOCK=true`.
- */
 export function createMockSttProvider(): SttProvider {
   return {
     async openStream(onTranscript) {
       let latest = '';
       let closed = false;
       return {
-        sendPcmChunk() {
-          // PCM is still buffered and hashed on the Worker for canonical WAV & speaker verification.
-        },
+        sendPcmChunk() {},
         injectMockTranscript(ev: SttTranscriptEvent) {
           if (closed) return;
           latest = ev.transcript;
@@ -93,9 +79,6 @@ export function createMockSttProvider(): SttProvider {
     },
     async transcribeBatch() {
       return null;
-    },
-    async checkNoteSummary() {
-      return true;
     },
   };
 }

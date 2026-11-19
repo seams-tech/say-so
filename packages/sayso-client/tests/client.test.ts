@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { audioDigest, canonicalWav } from '@seams/voice-verdict';
-import { float32ToPcm16, pcm16ToCanonicalWav } from '../src/pcm.ts';
+import { audioDigest, canonicalWav, pcm16ToCanonicalWav } from '@sayso/verdict';
+import { float32ToPcm16 } from '../src/pcm.ts';
 
-test('pcm16ToCanonicalWav matches @seams/voice-verdict canonicalWav byte-for-byte', async () => {
+test('pcm16ToCanonicalWav matches @sayso/verdict canonicalWav byte-for-byte', async () => {
   const floatSamples = new Float32Array(16_000);
   for (let i = 0; i < floatSamples.length; i += 1) {
     floatSamples[i] = Math.sin(i * 0.05) * 0.25;

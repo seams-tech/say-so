@@ -1,4 +1,4 @@
-import type { SaySoRequestInput } from '@seams/sayso-client';
+import type { SaySoIntentInput } from '@sayso/verdict';
 import { AccountVoiceDO, createDurableObjectVoiceStore } from './accountVoiceDo.ts';
 import { createVerdictSignerFromSeedHex, type VerdictSigner } from './crypto.ts';
 import { SaySoEngine } from './engine.ts';
@@ -7,22 +7,19 @@ import {
   createMockSttProvider,
   MOCK_VERIFIER_VERSION,
 } from './mockDev.ts';
-import { createDurableObjectMultisigStore, MultisigProposalDO } from './multisigProposalDo.ts';
 import { createSpeakerClient, SpeakerContainer } from './speaker.ts';
 import { createWorkersAiSttProvider } from './stt.ts';
 import { SaySoCore } from './wasm.ts';
-// Pre-compiled by `workerd` via `wrangler.jsonc` CompiledWasm rule (`0 ms` cold load).
 // @ts-expect-error -- bundled `.wasm` module import in Cloudflare Workers
 import wasmModule from './wasm/sayso_wasm.wasm';
 
-export { AccountVoiceDO, MultisigProposalDO, SpeakerContainer };
+export { AccountVoiceDO, SpeakerContainer };
 
 export interface Env {
   AI?: {
     run(model: string, inputs: Record<string, unknown>, options?: Record<string, unknown>): Promise<unknown>;
   };
   ACCOUNT_VOICE: DurableObjectNamespace;
-  MULTISIG_PROPOSAL: DurableObjectNamespace;
   SPEAKER_CONTAINER?: DurableObjectNamespace;
   /** Optional external speaker-service URL (e.g. local `cargo run` on `http://127.0.0.1:8080`). */
   SPEAKER_SERVICE_URL?: string;
@@ -108,11 +105,10 @@ async function buildEngine(env: Env): Promise<SaySoEngine> {
     wasm,
     signer,
     voiceStore: createDurableObjectVoiceStore(env.ACCOUNT_VOICE),
-    multisigStore: createDurableObjectMultisigStore(env.MULTISIG_PROPOSAL),
     speaker,
     stt,
     mockMode: mock,
-    verifierVersion: mock ? MOCK_VERIFIER_VERSION : 'sayso/0.1.0',
+    verifierVersion: mock ? MOCK_VERIFIER_VERSION : 'sayso/0.2.0',
   });
 }
 
@@ -130,9 +126,9 @@ export default {
       return jsonResponse(
         {
           ok: true,
-          verifier: mock ? MOCK_VERIFIER_VERSION : 'sayso/0.1.0',
+          verifier: mock ? MOCK_VERIFIER_VERSION : 'sayso/0.2.0',
           mock,
-          public_key: signer.publicKeyNear,
+          public_key_hex: signer.publicKeyHex,
         },
         env,
       );
@@ -140,7 +136,7 @@ export default {
 
     if (request.method === 'GET' && url.pathname === '/v1/public-key') {
       const signer = await getWarmSigner(env);
-      return jsonResponse({ public_key: signer.publicKeyNear, mock }, env);
+      return jsonResponse({ public_key_hex: signer.publicKeyHex, mock }, env);
     }
 
     if (url.pathname === '/v1/stream') {
@@ -182,37 +178,29 @@ export default {
 
     if (request.method === 'POST' && url.pathname === '/v1/render') {
       const engine = await buildEngine(env);
-      const body = (await request.json()) as {
-        owner: string;
-        request: SaySoRequestInput;
-        contacts?: string[];
-      };
-      return jsonResponse(engine.render(body.owner, body.request, body.contacts ?? []), env);
+      const body = (await request.json()) as { intent: SaySoIntentInput };
+      return jsonResponse(engine.render(body.intent), env);
     }
 
     if (request.method === 'POST' && url.pathname === '/v1/enroll') {
       const engine = await buildEngine(env);
       const body = (await request.json()) as {
-        owner: string;
+        user_id: string;
         audio_wav_b64: string[];
       };
-      return jsonResponse(await engine.enroll(body.owner, body.audio_wav_b64 ?? []), env);
+      return jsonResponse(await engine.enroll(body.user_id, body.audio_wav_b64 ?? []), env);
     }
 
     if (request.method === 'POST' && url.pathname === '/v1/verify') {
       const engine = await buildEngine(env);
       const body = (await request.json()) as {
-        owner: string;
-        request: SaySoRequestInput;
-        contacts?: string[];
+        intent: SaySoIntentInput;
         audio_wav_b64: string;
         mock_transcript?: string;
       };
       return jsonResponse(
         await engine.verifyBatch({
-          owner: body.owner,
-          request: body.request,
-          contacts: body.contacts,
+          intent: body.intent,
           audioWavB64: body.audio_wav_b64,
           mockTranscript: body.mock_transcript,
         }),

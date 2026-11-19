@@ -1,14 +1,13 @@
 import type {
   EnrollWireOutput,
   RenderWireOutput,
-  SaySoRequestInput,
   StreamClientMessage,
   StreamServerMessage,
   VerifyWireOutput,
-} from '@seams/sayso-client';
+} from '@sayso/client';
+import type { SaySoIntentInput } from '@sayso/verdict';
 import type { VoiceStore } from './accountVoiceDo.ts';
-import { toBase64, toHex, type VerdictSigner } from './crypto.ts';
-import type { MultisigStore, StoredMultisigOpening } from './multisigProposalDo.ts';
+import { toBase64, type VerdictSigner } from './crypto.ts';
 import type { SpeakerClient } from './speaker.ts';
 import type { SttLiveStream, SttProvider } from './stt.ts';
 import type { SaySoCore } from './wasm.ts';
@@ -20,12 +19,11 @@ export interface EngineDeps {
   wasm: SaySoCore;
   signer: VerdictSigner;
   voiceStore: VoiceStore;
-  multisigStore: MultisigStore;
   speaker: SpeakerClient;
   stt: SttProvider;
   /** True only when `SAYSO_DEV_MOCK=true` is explicitly opted in for local offline UI testing. */
   mockMode?: boolean;
-  /** Written into `Verdict.verifier` (`"sayso/0.1.0"` or `"sayso/0.1.0+mock"`). */
+  /** Written into `Verdict.verifier` (`"sayso/0.2.0"` or `"sayso/0.2.0+mock"`). */
   verifierVersion?: string;
   /** Trailing window after expected tokens match to catch negations like "... not". Default: 200 ms. */
   earlyCloseGuardMs?: number;
@@ -46,13 +44,11 @@ interface WasmAudioResult {
 
 interface WasmVerdictReady {
   ok: boolean;
-  outcome: 'accept' | 'step_up' | 'refuse';
+  outcome: 'accept' | 'refuse';
   reason: string | null;
   verdict_json: string;
   verdict_message_b64: string;
   expires_at_ms: number;
-  policy_text: string | null;
-  multisig: { commitment: string; salt: string } | null;
 }
 
 export class SaySoEngine {
@@ -65,29 +61,22 @@ export class SaySoEngine {
   constructor(deps: EngineDeps) {
     this.deps = deps;
     this.mockMode = Boolean(deps.mockMode);
-    this.verifierVersion = deps.verifierVersion ?? (this.mockMode ? 'sayso/0.1.0+mock' : 'sayso/0.1.0');
+    this.verifierVersion = deps.verifierVersion ?? (this.mockMode ? 'sayso/0.2.0+mock' : 'sayso/0.2.0');
     this.earlyCloseGuardMs = deps.earlyCloseGuardMs ?? 200;
     this.now = deps.now ?? (() => Date.now());
   }
 
-  render(owner: string, request: SaySoRequestInput, contacts: string[] = []): RenderWireOutput {
-    const saltHex =
-      request.kind === 'multisig_propose' || request.kind === 'multisig_hide_note'
-        ? '00'.repeat(32)
-        : undefined;
+  render(intent: SaySoIntentInput): RenderWireOutput {
     return this.deps.wasm.call<RenderWireOutput>({
       cmd: 'prepare',
-      owner,
-      request,
-      contacts,
-      salt_hex: saltHex,
+      intent,
     });
   }
 
-  async enroll(owner: string, wavB64List: string[]): Promise<EnrollWireOutput> {
+  async enroll(userId: string, wavB64List: string[]): Promise<EnrollWireOutput> {
     const started = this.now();
     const ms: Record<string, number> = {};
-    if (wavB64List.length !== 3) {
+    if (!userId || wavB64List.length !== 3) {
       return this.refuseEnroll('unsupported', ms, started);
     }
 
@@ -109,7 +98,7 @@ export class SaySoEngine {
       Promise.all(
         decoded.map((clip) => this.deps.speaker.embed(clip.canonical_wav_b64!, clip.audio_digest_hex!)),
       ),
-      this.deps.voiceStore.getTemplate(owner),
+      this.deps.voiceStore.getTemplate(userId),
     ]);
     ms.speaker = this.now() - speakerStart;
 
@@ -131,42 +120,39 @@ export class SaySoEngine {
 
     if (!evalRes.ok || !evalRes.template_svt1_b64 || evalRes.template_epoch === undefined) {
       return {
-        kind: 'seams_voice_enrollment_v3',
+        kind: 'sayso_enrollment_v1',
         outcome: 'refuse',
         reason: evalRes.reason ?? 'speaker',
         template_epoch: null,
         agreement_milli: evalRes.agreement_milli ?? null,
-        verifier_public_key: this.deps.signer.publicKeyNear,
+        verifier_public_key_hex: this.deps.signer.publicKeyHex,
         ms: { ...ms, total: this.now() - started },
       };
     }
 
     const doStart = this.now();
-    await this.deps.voiceStore.saveTemplate(owner, evalRes.template_epoch, evalRes.template_svt1_b64);
+    await this.deps.voiceStore.saveTemplate(userId, evalRes.template_epoch, evalRes.template_svt1_b64);
     ms.storage = this.now() - doStart;
     ms.total = this.now() - started;
 
     return {
-      kind: 'seams_voice_enrollment_v3',
+      kind: 'sayso_enrollment_v1',
       outcome: 'accept',
       reason: null,
       template_epoch: evalRes.template_epoch,
       agreement_milli: evalRes.agreement_milli ?? null,
-      verifier_public_key: this.deps.signer.publicKeyNear,
+      verifier_public_key_hex: this.deps.signer.publicKeyHex,
       ms,
     };
   }
 
   async verifyBatch(params: {
-    owner: string;
-    request: SaySoRequestInput;
-    contacts?: string[];
+    intent: SaySoIntentInput;
     audioWavB64: string;
     mockTranscript?: string;
   }): Promise<VerifyWireOutput> {
     const started = this.now();
     const ms: Record<string, number> = {};
-    const contacts = params.contacts ?? [];
 
     const audio = this.deps.wasm.call<WasmAudioResult>({
       cmd: 'audio_from_wav',
@@ -178,21 +164,36 @@ export class SaySoEngine {
       return this.signRefusal('audio_invalid', ms, started);
     }
 
-    return this.executeVerifyCore({
-      owner: params.owner,
-      request: params.request,
-      contacts,
+    const parallelStart = this.now();
+    const [consumed, speakerReply, transcript] = await Promise.all([
+      this.deps.voiceStore.consumeAudioAndGetTemplate(
+        params.intent.user_id,
+        audio.audio_digest_b64u,
+        started,
+      ),
+      audio.gate_passes
+        ? this.deps.speaker.embed(audio.canonical_wav_b64, audio.audio_digest_hex)
+        : Promise.resolve(null),
+      this.mockMode && params.mockTranscript !== undefined
+        ? Promise.resolve(params.mockTranscript)
+        : audio.gate_passes
+          ? this.deps.stt.transcribeBatch(audio.canonical_wav_b64)
+          : Promise.resolve(null),
+    ]);
+    ms.critical_parallel = this.now() - parallelStart;
+    if (speakerReply) ms.redimnet = speakerReply.modelMs;
+
+    return this.finalizeAndSign({
+      intent: params.intent,
       audio,
-      transcriptOverride: this.mockMode ? params.mockTranscript : undefined,
+      consumed,
+      speakerEmbeddingB64: speakerReply?.embeddingLeB64 ?? null,
+      transcript,
       ms,
       started,
     });
   }
 
-  /**
-   * Attaches a stateful streaming SaySo session (`init` -> binary PCM16 frames -> live `transcript`
-   * -> `200 ms` token-matched early close -> overlapped Speaker + DO + Ed25519 `verdict`).
-   */
   attachStreamSession(send: (msg: StreamServerMessage) => void, closeSocket: () => void): {
     onTextMessage: (raw: string) => Promise<void>;
     onBinaryChunk: (bytes: Uint8Array) => void;
@@ -205,13 +206,7 @@ export class SaySoEngine {
     let earlyCloseTimer: ReturnType<typeof setTimeout> | null = null;
     let sttStream: SttLiveStream | null = null;
     let latestTranscript = '';
-
-    let owner = '';
-    let request!: SaySoRequestInput;
-    let contacts: string[] = [];
-    let saltHex: string | undefined;
-    let storedOpening: StoredMultisigOpening | null = null;
-    let otherSignerTemplatesB64: string[] = [];
+    let intent!: SaySoIntentInput;
 
     const clearEarlyTimer = () => {
       if (earlyCloseTimer !== null) {
@@ -254,15 +249,12 @@ export class SaySoEngine {
       }
 
       const parallelStart = this.now();
-      const [flushedTranscript, consumed, speakerReply, summaryOk] = await Promise.all([
+      const [flushedTranscript, consumed, speakerReply] = await Promise.all([
         sttStream ? sttStream.finishAndFlush() : Promise.resolve(latestTranscript || null),
-        this.deps.voiceStore.consumeAudioAndGetTemplate(owner, audio.audio_digest_b64u, commitStarted),
+        this.deps.voiceStore.consumeAudioAndGetTemplate(intent.user_id, audio.audio_digest_b64u, commitStarted),
         audio.gate_passes
           ? this.deps.speaker.embed(audio.canonical_wav_b64, audio.audio_digest_hex)
           : Promise.resolve(null),
-        request.kind === 'community_note' && this.deps.stt.checkNoteSummary
-          ? this.deps.stt.checkNoteSummary(request.note_text, request.summary)
-          : Promise.resolve(true),
       ]);
       sttStream?.close();
       ms.critical_parallel = this.now() - parallelStart;
@@ -270,17 +262,11 @@ export class SaySoEngine {
 
       const finalTranscript = flushedTranscript ?? (latestTranscript || null);
       const output = await this.finalizeAndSign({
-        owner,
-        request,
-        contacts,
+        intent,
         audio,
         consumed,
         speakerEmbeddingB64: speakerReply?.embeddingLeB64 ?? null,
-        otherSignerTemplatesB64,
         transcript: finalTranscript,
-        summaryPasses: summaryOk,
-        saltHex,
-        storedOpening,
         ms,
         started: commitStarted,
       });
@@ -312,7 +298,6 @@ export class SaySoEngine {
         }
 
         if (msg.type === 'mock_transcript') {
-          // Strictly ignored unless Worker runs with opt-in `SAYSO_DEV_MOCK=true`.
           if (this.mockMode && initialized && sttStream?.injectMockTranscript) {
             sttStream.injectMockTranscript({
               transcript: msg.transcript,
@@ -325,54 +310,21 @@ export class SaySoEngine {
 
         if (msg.type === 'init') {
           if (initialized) return;
-          owner = msg.owner;
-          request = msg.request;
-          contacts = msg.contacts ?? [];
-
-          if (request.kind === 'multisig_propose' || request.kind === 'multisig_hide_note') {
-            saltHex = toHex(crypto.getRandomValues(new Uint8Array(32)));
-          } else if (request.kind === 'multisig_confirm') {
-            const confirmPrep = await this.deps.multisigStore.prepareConfirm(
-              request.multisig,
-              request.commitment_hex,
-              owner,
-            );
-            if (!confirmPrep.opening) {
-              committed = true;
-              const out = await this.signRefusal('proposal_missing', {}, this.now());
-              send({ type: 'verdict', sampleCount: 0, closedBy: 'client_end', output: out });
-              closeSocket();
-              return;
-            }
-            if (confirmPrep.attemptsExhausted) {
-              committed = true;
-              const out = await this.signRefusal('attempts_exhausted', {}, this.now());
-              send({ type: 'verdict', sampleCount: 0, closedBy: 'client_end', output: out });
-              closeSocket();
-              return;
-            }
-            storedOpening = confirmPrep.opening;
-            otherSignerTemplatesB64 = confirmPrep.otherSignerTemplatesB64;
-          }
+          intent = msg.intent;
 
           const prepared = this.deps.wasm.call<{
             ok: boolean;
             sentence?: string;
             display_text?: string;
             expected_tokens?: string[];
-            request_digest_b64u?: string;
-            recalled?: boolean;
+            intent_digest_b64u?: string;
             reason?: string;
           }>({
             cmd: 'prepare',
-            owner,
-            request,
-            contacts,
-            salt_hex: saltHex,
-            stored_proposal: storedOpening ?? undefined,
+            intent,
           });
 
-          if (!prepared.ok || !prepared.sentence || !prepared.expected_tokens || !prepared.request_digest_b64u) {
+          if (!prepared.ok || !prepared.sentence || !prepared.expected_tokens || !prepared.intent_digest_b64u) {
             committed = true;
             const out = await this.signRefusal(prepared.reason ?? 'unsupported', {}, this.now());
             send({ type: 'verdict', sampleCount: 0, closedBy: 'client_end', output: out });
@@ -393,12 +345,8 @@ export class SaySoEngine {
                 passes_now?: boolean;
               }>({
                 cmd: 'stream_progress',
-                owner,
-                request,
-                contacts,
+                intent,
                 transcript: ev.transcript,
-                salt_hex: saltHex,
-                stored_proposal: storedOpening ?? undefined,
               });
 
               if (prog.ok) {
@@ -439,11 +387,10 @@ export class SaySoEngine {
           initialized = true;
           send({
             type: 'ready',
-            sentence: prepared.recalled ? '' : prepared.sentence,
-            displayText: prepared.recalled ? '' : (prepared.display_text ?? prepared.sentence),
-            expectedTokens: prepared.recalled ? [] : prepared.expected_tokens,
-            requestDigestB64u: prepared.request_digest_b64u,
-            recalled: Boolean(prepared.recalled),
+            sentence: prepared.sentence,
+            displayText: prepared.display_text ?? prepared.sentence,
+            expectedTokens: prepared.expected_tokens,
+            intentDigestB64u: prepared.intent_digest_b64u,
             mock: this.mockMode,
           });
         }
@@ -474,183 +421,41 @@ export class SaySoEngine {
     };
   }
 
-  private async executeVerifyCore(params: {
-    owner: string;
-    request: SaySoRequestInput;
-    contacts: string[];
-    audio: WasmAudioResult;
-    transcriptOverride?: string;
-    ms: Record<string, number>;
-    started: number;
-  }): Promise<VerifyWireOutput> {
-    let saltHex: string | undefined;
-    let storedOpening: StoredMultisigOpening | null = null;
-    let otherSignerTemplatesB64: string[] = [];
-
-    if (params.request.kind === 'multisig_propose' || params.request.kind === 'multisig_hide_note') {
-      saltHex = toHex(crypto.getRandomValues(new Uint8Array(32)));
-    } else if (params.request.kind === 'multisig_confirm') {
-      const prep = await this.deps.multisigStore.prepareConfirm(
-        params.request.multisig,
-        params.request.commitment_hex,
-        params.owner,
-      );
-      if (!prep.opening) return this.signRefusal('proposal_missing', params.ms, params.started);
-      if (prep.attemptsExhausted) return this.signRefusal('attempts_exhausted', params.ms, params.started);
-      storedOpening = prep.opening;
-      otherSignerTemplatesB64 = prep.otherSignerTemplatesB64;
-    }
-
-    const parallelStart = this.now();
-    const [consumed, speakerReply, transcript, summaryPasses] = await Promise.all([
-      this.deps.voiceStore.consumeAudioAndGetTemplate(
-        params.owner,
-        params.audio.audio_digest_b64u!,
-        params.started,
-      ),
-      params.audio.gate_passes
-        ? this.deps.speaker.embed(params.audio.canonical_wav_b64!, params.audio.audio_digest_hex!)
-        : Promise.resolve(null),
-      params.transcriptOverride !== undefined
-        ? Promise.resolve(params.transcriptOverride)
-        : params.audio.gate_passes
-          ? this.deps.stt.transcribeBatch(params.audio.canonical_wav_b64!)
-          : Promise.resolve(null),
-      params.request.kind === 'community_note' && this.deps.stt.checkNoteSummary
-        ? this.deps.stt.checkNoteSummary(params.request.note_text, params.request.summary)
-        : Promise.resolve(true),
-    ]);
-    params.ms.critical_parallel = this.now() - parallelStart;
-    if (speakerReply) params.ms.redimnet = speakerReply.modelMs;
-
-    return this.finalizeAndSign({
-      owner: params.owner,
-      request: params.request,
-      contacts: params.contacts,
-      audio: params.audio,
-      consumed,
-      speakerEmbeddingB64: speakerReply?.embeddingLeB64 ?? null,
-      otherSignerTemplatesB64,
-      transcript,
-      summaryPasses,
-      saltHex,
-      storedOpening,
-      ms: params.ms,
-      started: params.started,
-    });
-  }
-
   private async finalizeAndSign(params: {
-    owner: string;
-    request: SaySoRequestInput;
-    contacts: string[];
+    intent: SaySoIntentInput;
     audio: WasmAudioResult;
     consumed: { audioReused: boolean; template: { epoch: number; templateSvt1B64: string } | null };
     speakerEmbeddingB64: string | null;
-    otherSignerTemplatesB64: string[];
     transcript: string | null;
-    summaryPasses: boolean | null;
-    saltHex: string | undefined;
-    storedOpening: StoredMultisigOpening | null;
     ms: Record<string, number>;
     started: number;
   }): Promise<VerifyWireOutput> {
-    if (params.request.kind === 'community_note' && params.summaryPasses === null) {
-      return this.signRefusal('summary_check_unavailable', params.ms, params.started);
-    }
-
     const ready = this.deps.wasm.call<WasmVerdictReady>({
       cmd: 'evaluate_verify',
-      owner: params.owner,
-      request: params.request,
-      contacts: params.contacts,
+      intent: params.intent,
       audio_digest_b64u: params.audio.audio_digest_b64u,
       gate_passes: Boolean(params.audio.gate_passes),
       audio_reused: params.consumed.audioReused,
       template_svt1_b64: params.consumed.template?.templateSvt1B64 ?? null,
       embedding_le_b64: params.speakerEmbeddingB64,
-      other_signer_templates_b64: params.otherSignerTemplatesB64,
       transcript: params.transcript,
-      summary_passes: params.summaryPasses,
       now_ms: this.now(),
       verifier_version: this.verifierVersion,
-      salt_hex: params.saltHex,
-      stored_proposal: params.storedOpening ?? undefined,
     });
-
-    if (params.consumed.template) {
-      if (
-        (params.request.kind === 'multisig_propose' || params.request.kind === 'multisig_hide_note') &&
-        (ready.outcome === 'accept' || ready.outcome === 'step_up') &&
-        ready.multisig &&
-        params.saltHex
-      ) {
-        const prepared = this.deps.wasm.call<{ multisig_commitment_hex?: string }>({
-          cmd: 'prepare',
-          owner: params.owner,
-          request: params.request,
-          contacts: params.contacts,
-          salt_hex: params.saltHex,
-        });
-        if (prepared.multisig_commitment_hex) {
-          const opening: StoredMultisigOpening =
-            params.request.kind === 'multisig_propose'
-              ? {
-                  proposal_id: params.request.proposal_id,
-                  receiver: params.request.receiver,
-                  amount_yocto: params.request.amount_yocto,
-                  salt_hex: params.saltHex,
-                }
-              : {
-                  proposal_id: params.request.proposal_id,
-                  note_id: params.request.note_id,
-                  salt_hex: params.saltHex,
-                };
-          await this.deps.multisigStore.saveProposal(
-            params.request.multisig,
-            prepared.multisig_commitment_hex,
-            opening,
-            params.owner,
-            params.consumed.template.templateSvt1B64,
-          );
-        }
-      } else if (params.request.kind === 'multisig_confirm') {
-        if (ready.outcome === 'accept' || ready.outcome === 'step_up') {
-          await this.deps.multisigStore.recordConfirmOutcome(
-            params.request.multisig,
-            params.request.commitment_hex,
-            params.owner,
-            ready.outcome,
-            params.consumed.template.templateSvt1B64,
-          );
-        } else if (ready.reason === 'words') {
-          await this.deps.multisigStore.recordConfirmOutcome(
-            params.request.multisig,
-            params.request.commitment_hex,
-            params.owner,
-            'words_refusal',
-            params.consumed.template.templateSvt1B64,
-          );
-        }
-      }
-    }
 
     const signStart = this.now();
     const signatureB64 = await this.deps.signer.signMessageB64(ready.verdict_message_b64);
     params.ms.sign = this.now() - signStart;
     params.ms.total = this.now() - params.started;
 
-    const out: VerifyWireOutput = {
-      kind: 'seams_voice_verify_output_v2',
+    return {
+      kind: 'sayso_verify_output_v1',
       verdict_json: ready.verdict_json,
       signature_b64: signatureB64,
-      public_key: this.deps.signer.publicKeyNear,
-      policy_text: ready.policy_text,
+      public_key_hex: this.deps.signer.publicKeyHex,
       ms: params.ms,
       detail: null,
     };
-    if (ready.multisig) out.multisig = ready.multisig;
-    return out;
   }
 
   private async signRefusal(
@@ -667,11 +472,10 @@ export class SaySoEngine {
     const signatureB64 = await this.deps.signer.signMessageB64(ready.verdict_message_b64);
     ms.total = this.now() - started;
     return {
-      kind: 'seams_voice_verify_output_v2',
+      kind: 'sayso_verify_output_v1',
       verdict_json: ready.verdict_json,
       signature_b64: signatureB64,
-      public_key: this.deps.signer.publicKeyNear,
-      policy_text: null,
+      public_key_hex: this.deps.signer.publicKeyHex,
       ms,
       detail: null,
     };
@@ -683,12 +487,12 @@ export class SaySoEngine {
     started: number,
   ): EnrollWireOutput {
     return {
-      kind: 'seams_voice_enrollment_v3',
+      kind: 'sayso_enrollment_v1',
       outcome: 'refuse',
       reason,
       template_epoch: null,
       agreement_milli: null,
-      verifier_public_key: this.deps.signer.publicKeyNear,
+      verifier_public_key_hex: this.deps.signer.publicKeyHex,
       ms: { ...ms, total: this.now() - started },
     };
   }

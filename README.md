@@ -2,11 +2,13 @@
 
 Nothing moves without your say-so.
 
-SaySo is the low-latency Cloudflare-native implementation of spoken-intent authorization. A person authorizes one exact action—an AI-agent payment, a deployment, a NEAR transfer, or a multisig proposal—by speaking the canonical sentence aloud.
+SaySo is a standalone, zero-Web3, Cloudflare-native spoken-intent authorization library. A user authorizes one exact action—an AI-agent payout, a production deployment, a database reset, or any API call—by saying the canonical sentence aloud.
 
-SaySo verifies **who spoke** (ReDimNet B1 192-float voice template) and **which words were spoken** (`spoken-intent` grammar + confusion set), then signs a 13-field `seams_voice_signed_verdict_v2` Ed25519 verdict bound to both `request_digest` and `audio_digest`. Every verdict is 100% wire-compatible with `@seams/voice-verdict`, `@seams/wallet`, and existing on-chain NEAR contracts (`notes`, `pm-notes`, `voice-multisig`).
+SaySo checks **who spoke** (ReDimNet B1 192-float speaker template) and **which words were spoken** (spoken-English normalization with strict negation and number guards), then signs a compact 12-field Ed25519 JSON verdict (`sayso_verdict_v1`) bound to `user_id`, `action`, `intent_digest` (SHA-256 of your payload + sentence), and `audio_digest` (single-use canonical WAV SHA-256).
 
-## Architecture (`~300 ms` Post-Speech Wait)
+Any backend verifies the verdict with standard WebCrypto Ed25519 via `@sayso/verdict` (zero dependencies).
+
+## Architecture
 
 ```mermaid
 flowchart LR
@@ -14,8 +16,8 @@ flowchart LR
   Worker["Cloudflare Worker<br/>+ sayso-wasm"]
   Nova["Workers AI<br/>@cf/deepgram/nova-3 WS"]
   Speaker["Cloudflare Container<br/>ReDimNet B1 AVX2 (scale-to-zero)"]
-  DO["SQLite Durable Objects<br/>AccountVoiceDO + MultisigProposalDO"]
-  Sign["WebCrypto Ed25519<br/>seams_voice_signed_verdict_v2"]
+  DO["SQLite Durable Object<br/>AccountVoiceDO"]
+  Sign["WebCrypto Ed25519<br/>sayso_verdict_v1"]
 
   Mic -->|"wss:///v1/stream live PCM"| Worker
   Worker -->|"live PCM frames"| Nova
@@ -24,13 +26,38 @@ flowchart LR
   Worker --> Sign
 ```
 
-### Key Design Choices
+## Verifying a Verdict in Any Backend (`@sayso/verdict`)
 
-1. **Zero per-call WASM cold load:** `crates/sayso-wasm` compiles `spoken-intent`, `words`, `audio`, `embedding`, `policy`, and `verdict` to a standalone `wasm32-unknown-unknown` module (`~336 KB`). `workerd` keeps the compiled module warm across requests.
-2. **Token-matched `200 ms` early close with negation guard:** Because `spoken-intent` renders the exact expected token list before speech begins, the Worker monitors live `@cf/deepgram/nova-3` tokens and schedules commit `200 ms` after all expected tokens match. If a trailing word (such as `"not"`) arrives inside that window, early-close cancels immediately and refuses with `words`.
-3. **Deterministic frame-indexed `audio_digest`:** When the Worker commits at `sampleCount = N`, it builds the canonical 44-byte WAV over `samples[0..N]` and returns `sampleCount` with the signed verdict. `@seams/sayso-client` builds the byte-identical WAV from its local PCM buffer so `checkVerdict` verifies both `requestDigest` and `audioDigest` locally.
-4. **Atomic SQLite Durable Objects:** `AccountVoiceDO` stores 808-byte `SVT1` templates and enforces single-use `audio_digest` replay protection in one synchronous SQLite transaction. `MultisigProposalDO` stores proposal openings, `MAX_TRIES = 3` counters, and signer templates for zero-hop `same_speaker` enforcement.
-5. **Pure scale-to-zero `SpeakerContainer`:** Configured in `workers/verifier/wrangler.jsonc` with no warm keepalive cron (`sleepAfter = "3m"`).
+```ts
+import { createIntent, verifyVerdict } from '@sayso/verdict';
+
+const { intentDigest } = await createIntent({
+  userId: 'alice@acme.com',
+  action: 'stripe/payout',
+  payload: JSON.stringify({ recipient: 'acct_9182', amount_usd: 45 }),
+  sentence: 'Approve payout $45',
+});
+
+const result = await verifyVerdict({
+  verdictJson,
+  signatureB64,
+  publicKey: process.env.SAYSO_PUBLIC_KEY_HEX!,
+  userId: 'alice@acme.com',
+  action: 'stripe/payout',
+  intentDigest,
+});
+
+if (!result.ok) throw new Error(result.refusal.code);
+```
+
+## Repository Layout
+
+- `crates/sayso-wasm` — Pure Rust `wasm32-unknown-unknown` core (spoken-English & currency/number normalization, negation/number guards, `SVT1` speaker templates, `sayso_verdict_v1` builder).
+- `crates/speaker-service` — `axum` + `tract-onnx` ReDimNet B1 embedding service + `Dockerfile.cloudflare` (pure scale-to-zero Cloudflare Container).
+- `packages/sayso-verdict` — Zero-dependency `@sayso/verdict` TypeScript library (`createIntent`, `verifyVerdict`, `canonicalWav`, `audioDigest`).
+- `packages/sayso-client` — `@sayso/client` browser `AudioWorklet` PCM streamer + WebSocket/HTTP SDK.
+- `workers/verifier` — Cloudflare Worker (`sayso-verifier`), `AccountVoiceDO`, and `SpeakerContainer`.
+- `demo` — Vite + React live streaming demo.
 
 ## Quick Start
 
@@ -42,14 +69,10 @@ pnpm typecheck
 
 ### Offline Local UI Testing (`SAYSO_DEV_MOCK=true`)
 
-For offline development without Docker or remote Cloudflare AI bindings:
-
 ```bash
 cp workers/verifier/.dev.vars.example workers/verifier/.dev.vars
-# Terminal 1: Start Worker locally on :8787 (verdicts tagged "sayso/0.1.0+mock")
-pnpm dev:worker
-# Terminal 2: Start Vite demo on :5179
-pnpm dev:demo
+pnpm dev:worker   # Terminal 1 (:8787)
+pnpm dev:demo     # Terminal 2 (:5179)
 ```
 
 ### Deploy to Cloudflare

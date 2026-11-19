@@ -1,9 +1,16 @@
-import { audioDigest, checkVerdict, type Digest, type VerdictCheck } from '@seams/voice-verdict';
-import { MAX_SAMPLES, pcm16ToCanonicalWav, pcm16ToLeBytes, toBase64 } from './pcm.ts';
+import {
+  audioDigest,
+  MAX_SAMPLES,
+  pcm16ToCanonicalWav,
+  verifyVerdict,
+  type Digest,
+  type SaySoIntentInput,
+  type VerdictCheck,
+} from '@sayso/verdict';
+import { pcm16ToLeBytes, toBase64 } from './pcm.ts';
 import type {
   EnrollWireOutput,
   RenderWireOutput,
-  SaySoRequestInput,
   StreamClientMessage,
   StreamServerMessage,
   VerifyWireOutput,
@@ -12,36 +19,25 @@ import type {
 export interface SaySoClientConfig {
   /** Base HTTP(S) URL of the SaySo Cloudflare Worker, e.g. `https://sayso.example.workers.dev` or `http://localhost:8787`. */
   baseUrl: string;
-  /** Pinned Ed25519 verifier public key (`ed25519:<base58>` or 64-char hex). */
+  /** Pinned Ed25519 verifier public key (64 hex chars, 43-char base64url, or 32-byte Uint8Array). */
   verifierPublicKey: string | Uint8Array;
   fetch?: typeof fetch;
   createWebSocket?: (url: string) => WebSocket;
 }
 
 export interface StreamVerifyOptions {
-  owner: string;
-  request: SaySoRequestInput;
-  contacts?: string[];
-  /** Locally computed request digest to verify against the signed verdict. */
-  expectedRequestDigest?: Digest;
-  acceptStepUp?: boolean;
+  intent: SaySoIntentInput;
+  /** Locally computed 32-byte `intentDigest` from `createIntent()` to check against the signed verdict. */
+  expectedIntentDigest?: Digest;
   onReady?: (info: Extract<StreamServerMessage, { type: 'ready' }>) => void;
   onTranscript?: (update: Extract<StreamServerMessage, { type: 'transcript' }>) => void;
 }
 
 export interface StreamVerifySession {
-  /** Push a live 16 kHz mono Int16 PCM frame to the Worker over WebSocket. */
   sendPcmFrame: (frame: Int16Array) => void;
-  /**
-   * Optional offline dev helper (honored ONLY when the Worker runs with `SAYSO_DEV_MOCK=true`,
-   * ignored in production).
-   */
   sendMockTranscript: (transcript: string, isFinal: boolean, speechFinal?: boolean) => void;
-  /** Signal end of speech from client-side VAD if the server has not already early-closed. */
   finishSpeech: () => void;
-  /** Close/abort the session. */
   abort: () => void;
-  /** Resolves when the Worker returns a signed verdict and local Ed25519 + audioDigest check completes. */
   result: Promise<{
     wire: VerifyWireOutput;
     checked: VerdictCheck;
@@ -64,22 +60,21 @@ export class SaySoClient {
     this.wsFactory = config.createWebSocket ?? ((url) => new WebSocket(url));
   }
 
-  async render(owner: string, request: SaySoRequestInput, contacts: string[] = []): Promise<RenderWireOutput> {
+  async render(intent: SaySoIntentInput): Promise<RenderWireOutput> {
     const res = await this.fetchImpl(`${this.baseUrl}/v1/render`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ owner, request, contacts }),
+      body: JSON.stringify({ intent }),
     });
     return (await res.json()) as RenderWireOutput;
   }
 
-  async enroll(owner: string, wavClips: readonly [Uint8Array, Uint8Array, Uint8Array]): Promise<EnrollWireOutput> {
+  async enroll(userId: string, wavClips: readonly [Uint8Array, Uint8Array, Uint8Array]): Promise<EnrollWireOutput> {
     const res = await this.fetchImpl(`${this.baseUrl}/v1/enroll`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        op: 'enroll',
-        owner,
+        user_id: userId,
         audio_wav_b64: wavClips.map((clip) => toBase64(clip)),
       }),
     });
@@ -87,32 +82,27 @@ export class SaySoClient {
   }
 
   async verifyBatch(params: {
-    owner: string;
-    request: SaySoRequestInput;
+    intent: SaySoIntentInput;
     wav: Uint8Array;
-    contacts?: string[];
-    expectedRequestDigest?: Digest;
-    acceptStepUp?: boolean;
+    expectedIntentDigest?: Digest;
   }): Promise<{ wire: VerifyWireOutput; checked: VerdictCheck }> {
     const res = await this.fetchImpl(`${this.baseUrl}/v1/verify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        op: 'verify',
-        owner: params.owner,
-        request: params.request,
-        contacts: params.contacts ?? [],
+        intent: params.intent,
         audio_wav_b64: toBase64(params.wav),
       }),
     });
     const wire = (await res.json()) as VerifyWireOutput;
-    const checked = await checkVerdict({
+    const checked = await verifyVerdict({
       verdictJson: wire.verdict_json,
       signatureB64: wire.signature_b64 ?? '',
       publicKey: this.verifierPublicKey,
-      requestDigest: params.expectedRequestDigest,
+      userId: params.intent.user_id,
+      action: params.intent.action,
+      intentDigest: params.expectedIntentDigest,
       audioDigest: await audioDigest(params.wav),
-      acceptStepUp: params.acceptStepUp,
     });
     return { wire, checked };
   }
@@ -146,9 +136,7 @@ export class SaySoClient {
       ws.addEventListener('open', () => {
         sendJson({
           type: 'init',
-          owner: options.owner,
-          request: options.request,
-          contacts: options.contacts ?? [],
+          intent: options.intent,
         });
       });
 
@@ -191,13 +179,14 @@ export class SaySoClient {
             const count = Math.min(msg.sampleCount, recordedSamples);
             const canonicalWav = count > 0 ? pcm16ToCanonicalWav(recorded, count) : new Uint8Array(0);
             const expectedAudio = count > 0 ? await audioDigest(canonicalWav) : undefined;
-            const checked = await checkVerdict({
+            const checked = await verifyVerdict({
               verdictJson: msg.output.verdict_json,
               signatureB64: msg.output.signature_b64 ?? '',
               publicKey: this.verifierPublicKey,
-              requestDigest: options.expectedRequestDigest,
+              userId: options.intent.user_id,
+              action: options.intent.action,
+              intentDigest: options.expectedIntentDigest,
               audioDigest: expectedAudio,
-              acceptStepUp: options.acceptStepUp,
             });
             resolve({
               wire: msg.output,

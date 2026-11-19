@@ -1,6 +1,6 @@
 /**
  * Cloudflare Workers AI Speech-to-Text (`@cf/deepgram/nova-3` WebSocket streaming
- * + `@cf/openai/whisper-large-v3-turbo` batch fallback) & fast note-summary fit check.
+ * + `@cf/openai/whisper-large-v3-turbo` batch fallback).
  */
 
 export interface SttTranscriptEvent {
@@ -11,7 +11,6 @@ export interface SttTranscriptEvent {
 
 export interface SttLiveStream {
   sendPcmChunk(pcmLeBytes: Uint8Array): void;
-  /** Used ONLY in opt-in `SAYSO_DEV_MOCK=true` mode when client forwards browser SpeechRecognition. */
   injectMockTranscript?(ev: SttTranscriptEvent): void;
   finishAndFlush(): Promise<string | null>;
   close(): void;
@@ -20,7 +19,6 @@ export interface SttLiveStream {
 export interface SttProvider {
   openStream(onTranscript: (ev: SttTranscriptEvent) => void): Promise<SttLiveStream>;
   transcribeBatch(canonicalWavB64: string): Promise<string | null>;
-  checkNoteSummary?(noteText: string, summary: string): Promise<boolean | null>;
 }
 
 interface WorkersAiBinding {
@@ -166,32 +164,6 @@ export function createWorkersAiSttProvider(ai: WorkersAiBinding): SttProvider {
           language: 'en',
         })) as { text?: string };
         return result.text?.trim() || null;
-      } catch {
-        return null;
-      }
-    },
-
-    async checkNoteSummary(noteText: string, summary: string): Promise<boolean | null> {
-      try {
-        const result = (await ai.run('@cf/meta/llama-3.1-8b-instruct-fast', {
-          messages: [
-            {
-              role: 'system',
-              content:
-                'Reply with ONLY "YES" if the short summary accurately states the main point of the note without reversing its meaning, otherwise reply "NO".',
-            },
-            {
-              role: 'user',
-              content: `Note: ${noteText}\nSummary: ${summary}`,
-            },
-          ],
-          max_tokens: 4,
-          temperature: 0,
-        })) as { response?: string };
-        const answer = result.response?.trim().toUpperCase() ?? '';
-        if (answer.startsWith('YES')) return true;
-        if (answer.startsWith('NO')) return false;
-        return null;
       } catch {
         return null;
       }

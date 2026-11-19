@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  pcm16ToCanonicalWav,
   SaySoClient,
   startLiveMicrophonePcm,
-  type SaySoRequestInput,
   type VerifyWireOutput,
-} from '@seams/sayso-client';
-import { confirmationRequest, type VerdictCheck } from '@seams/voice-verdict';
+} from '@sayso/client';
+import {
+  createIntent,
+  pcm16ToCanonicalWav,
+  type VerdictCheck,
+} from '@sayso/verdict';
 
 const DEFAULT_WORKER_URL = import.meta.env.VITE_SAYSO_URL ?? 'http://localhost:8787';
 
@@ -28,45 +30,36 @@ type SpeechRecognitionCtor = new () => BrowserSpeechRecognition;
 interface Preset {
   id: string;
   label: string;
-  owner: string;
-  request: SaySoRequestInput;
-  payloadText?: string;
+  userId: string;
+  action: string;
+  payloadText: string;
+  sentence: string;
 }
 
 const PRESETS: Preset[] = [
   {
     id: 'agent-payout',
     label: 'AI Agent Payout ($45)',
-    owner: 'app:sayso-demo',
+    userId: 'alice@acme.com',
+    action: 'stripe/payout',
     payloadText: '{"recipient":"acct_9182","amount_usd":45}',
-    request: {
-      kind: 'confirmation',
-      context: 'stripe/payout',
-      payload_sha256_hex: '0'.repeat(64),
-      summary: 'approve payout forty five dollars',
-    },
+    sentence: 'Approve payout $45',
   },
   {
     id: 'agent-deploy',
     label: 'DevOps Production Deploy',
-    owner: 'app:sayso-demo',
+    userId: 'alice@acme.com',
+    action: 'github/deploy',
     payloadText: '{"service":"payments-api","release":"2.4"}',
-    request: {
-      kind: 'confirmation',
-      context: 'github/deploy',
-      payload_sha256_hex: '0'.repeat(64),
-      summary: 'deploy release two four to production',
-    },
+    sentence: 'Deploy release 2.4 to production',
   },
   {
-    id: 'near-transfer',
-    label: 'NEAR Transfer (2 NEAR)',
-    owner: 'demo.testnet',
-    request: {
-      kind: 'transfer',
-      receiver: 'alice.testnet',
-      amount_yocto: '2000000000000000000000000',
-    },
+    id: 'db-reset',
+    label: 'Reset Staging Database',
+    userId: 'alice@acme.com',
+    action: 'infra/db-reset',
+    payloadText: '{"cluster":"staging-us-east","confirm":true}',
+    sentence: 'Reset staging database now',
   },
 ];
 
@@ -81,7 +74,7 @@ function makeSyntheticTone(ms: number, freqStep = 0.11): Int16Array {
 
 export function App() {
   const [workerUrl, setWorkerUrl] = useState(DEFAULT_WORKER_URL);
-  const [publicKey, setPublicKey] = useState<string>('');
+  const [publicKeyHex, setPublicKeyHex] = useState<string>('');
   const [isMockWorker, setIsMockWorker] = useState<boolean>(false);
   const [presetId, setPresetId] = useState<string>(PRESETS[0].id);
   const [expectedTokens, setExpectedTokens] = useState<string[]>([]);
@@ -103,56 +96,33 @@ export function App() {
   useEffect(() => {
     fetch(`${workerUrl.replace(/\/+$/, '')}/healthz`)
       .then((r) => r.json())
-      .then((d: { public_key?: string; mock?: boolean }) => {
-        if (d.public_key) setPublicKey(d.public_key);
+      .then((d: { public_key_hex?: string; mock?: boolean }) => {
+        if (d.public_key_hex) setPublicKeyHex(d.public_key_hex);
         setIsMockWorker(Boolean(d.mock));
       })
       .catch(() => {
-        setPublicKey('');
+        setPublicKeyHex('');
         setIsMockWorker(false);
       });
   }, [workerUrl]);
 
   useEffect(() => {
-    if (!publicKey) return;
     void (async () => {
-      const client = new SaySoClient({ baseUrl: workerUrl, verifierPublicKey: publicKey });
-      let req = preset.request;
-      if (req.kind === 'confirmation' && preset.payloadText) {
-        const built = await confirmationRequest({
-          owner: preset.owner,
-          context: req.context,
-          payload: new TextEncoder().encode(preset.payloadText),
-          summary: req.summary,
-        });
-        req = built.request;
-      }
-      const rendered = await client.render(preset.owner, req);
-      setExpectedTokens(rendered.expected_tokens ?? []);
-      setDisplayText(rendered.display_text ?? rendered.sentence ?? '');
+      const built = await createIntent({
+        userId: preset.userId,
+        action: preset.action,
+        payload: preset.payloadText,
+        sentence: preset.sentence,
+      });
+      setExpectedTokens(built.expectedTokens);
+      setDisplayText(built.canonicalSentence);
       setMatchedCount(0);
       setLiveHeard('');
     })();
-  }, [workerUrl, publicKey, preset]);
-
-  async function buildCurrentRequest(): Promise<{ request: SaySoRequestInput; expectedDigest?: Uint8Array }> {
-    let req = preset.request;
-    let expectedDigest: Uint8Array | undefined;
-    if (req.kind === 'confirmation' && preset.payloadText) {
-      const built = await confirmationRequest({
-        owner: preset.owner,
-        context: req.context,
-        payload: new TextEncoder().encode(preset.payloadText),
-        summary: req.summary,
-      });
-      req = built.request;
-      expectedDigest = built.digest;
-    }
-    return { request: req, expectedDigest };
-  }
+  }, [preset]);
 
   async function recordOneClipForEnrollment() {
-    if (!publicKey) return;
+    if (!publicKeyHex) return;
     const chunks: Int16Array[] = [];
     let total = 0;
     setStatus(`Recording enrollment sample ${clipsRecorded.length + 1}/3...`);
@@ -187,12 +157,12 @@ export function App() {
         return;
       }
       setStatus('Enrolling 3 voice clips into AccountVoiceDO...');
-      const client = new SaySoClient({ baseUrl: workerUrl, verifierPublicKey: publicKey });
-      const res = await client.enroll(preset.owner, [next[0], next[1], next[2]]);
+      const client = new SaySoClient({ baseUrl: workerUrl, verifierPublicKey: publicKeyHex });
+      const res = await client.enroll(preset.userId, [next[0], next[1], next[2]]);
       setClipsRecorded([]);
       if (res.outcome === 'accept') {
         setEnrollEpoch(res.template_epoch);
-        setStatus(`Enrolled ${preset.owner} (epoch ${res.template_epoch}, agreement ${res.agreement_milli}‰)`);
+        setStatus(`Enrolled ${preset.userId} (epoch ${res.template_epoch}, agreement ${res.agreement_milli}‰)`);
       } else {
         setStatus(`Enrollment refused: ${res.reason}`);
       }
@@ -200,21 +170,24 @@ export function App() {
   }
 
   async function startStreamingApproval() {
-    if (!publicKey) return;
+    if (!publicKeyHex) return;
     setLastResult(null);
     setMatchedCount(0);
     setLiveHeard('');
     setStatus('Opening WebSocket stream to SaySo Worker...');
 
-    const client = new SaySoClient({ baseUrl: workerUrl, verifierPublicKey: publicKey });
-    const { request: req, expectedDigest } = await buildCurrentRequest();
+    const client = new SaySoClient({ baseUrl: workerUrl, verifierPublicKey: publicKeyHex });
+    const built = await createIntent({
+      userId: preset.userId,
+      action: preset.action,
+      payload: preset.payloadText,
+      sentence: preset.sentence,
+    });
 
     let lastSpeechFrameMs = performance.now();
     const session = client.streamVerify({
-      owner: preset.owner,
-      request: req,
-      expectedRequestDigest: expectedDigest,
-      acceptStepUp: true,
+      intent: built.intent,
+      expectedIntentDigest: built.intentDigest,
       onReady(info) {
         setExpectedTokens(info.expectedTokens);
         setStatus(
@@ -229,7 +202,6 @@ export function App() {
       },
     });
 
-    // In opt-in offline mock mode, bridge browser SpeechRecognition into the Worker's mock STT.
     let recognition: BrowserSpeechRecognition | null = null;
     if (isMockWorker) {
       const win = window as unknown as {
@@ -290,14 +262,14 @@ export function App() {
   }
 
   async function runOfflineSimulation() {
-    if (!publicKey || !isMockWorker) return;
+    if (!publicKeyHex || !isMockWorker) return;
     setLastResult(null);
     setMatchedCount(0);
     setLiveHeard('');
-    const client = new SaySoClient({ baseUrl: workerUrl, verifierPublicKey: publicKey });
+    const client = new SaySoClient({ baseUrl: workerUrl, verifierPublicKey: publicKeyHex });
 
     setStatus('Enrolling synthetic offline speaker...');
-    const enrolled = await client.enroll(preset.owner, [
+    const enrolled = await client.enroll(preset.userId, [
       pcm16ToCanonicalWav(makeSyntheticTone(850, 0.11)),
       pcm16ToCanonicalWav(makeSyntheticTone(900, 0.111)),
       pcm16ToCanonicalWav(makeSyntheticTone(950, 0.109)),
@@ -308,15 +280,18 @@ export function App() {
     }
     setEnrollEpoch(enrolled.template_epoch);
 
-    const { request: req, expectedDigest } = await buildCurrentRequest();
-    const tokens = expectedTokens.length > 0 ? expectedTokens : displayText.toLowerCase().split(/\s+/);
+    const built = await createIntent({
+      userId: preset.userId,
+      action: preset.action,
+      payload: preset.payloadText,
+      sentence: preset.sentence,
+    });
+    const tokens = built.expectedTokens;
     let speechEndedMs = performance.now();
 
     const session = client.streamVerify({
-      owner: preset.owner,
-      request: req,
-      expectedRequestDigest: expectedDigest,
-      acceptStepUp: true,
+      intent: built.intent,
+      expectedIntentDigest: built.intentDigest,
       onTranscript(t) {
         setLiveHeard(t.heard);
         setMatchedCount(t.matchedPrefixCount);
@@ -353,12 +328,13 @@ export function App() {
     <div style={{ maxWidth: 820, margin: '40px auto', padding: '0 24px' }}>
       <header style={{ marginBottom: 28 }}>
         <div style={{ fontSize: 13, color: '#7ee787', fontWeight: 600, letterSpacing: 1 }}>
-          CLOUDFLARE-NATIVE SPOKEN-INTENT AUTHORIZATION
+          SPOKEN-INTENT AUTHORIZATION · SIGNED ED25519 VERDICTS
         </div>
         <h1 style={{ margin: '6px 0 8px', fontSize: 34 }}>SaySo</h1>
         <p style={{ margin: 0, color: '#8b949e', lineHeight: 1.5 }}>
           Nothing moves without your say-so. Live 16 kHz AudioWorklet PCM streams over WebSocket to
-          Cloudflare Workers + Deepgram Nova-3 + ReDimNet Container + SQLite Durable Objects.
+          Cloudflare Workers + Deepgram Nova-3 + ReDimNet Container + SQLite Durable Objects and
+          returns a standard Ed25519 signed verdict.
         </p>
       </header>
 
@@ -385,8 +361,8 @@ export function App() {
               width: 260,
             }}
           />
-          <span style={{ fontSize: 12, color: publicKey ? '#7ee787' : '#f85149' }}>
-            {publicKey ? `Pinned Key: ${publicKey.slice(0, 22)}…` : 'Worker offline (run pnpm dev:worker)'}
+          <span style={{ fontSize: 12, color: publicKeyHex ? '#7ee787' : '#f85149' }}>
+            {publicKeyHex ? `Ed25519 Key: ${publicKeyHex.slice(0, 16)}…` : 'Worker offline (run pnpm dev:worker)'}
           </span>
           {isMockWorker && (
             <span
@@ -400,7 +376,7 @@ export function App() {
                 color: '#e3b341',
               }}
             >
-              OFFLINE MOCK MODE (sayso/0.1.0+mock)
+              OFFLINE MOCK MODE (sayso/0.2.0+mock)
             </span>
           )}
         </div>
@@ -436,7 +412,7 @@ export function App() {
         </div>
 
         <div style={{ fontSize: 13, color: '#8b949e', marginBottom: 8 }}>
-          Owner: <code>{preset.owner}</code>{' '}
+          User: <code>{preset.userId}</code> · Action: <code>{preset.action}</code>{' '}
           {enrollEpoch !== null && <span style={{ color: '#7ee787' }}>(Enrolled epoch {enrollEpoch})</span>}
         </div>
 
@@ -484,14 +460,14 @@ export function App() {
         <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
           <button
             onClick={() => void recordOneClipForEnrollment()}
-            disabled={!publicKey}
+            disabled={!publicKeyHex}
             style={{
               background: '#21262d',
               color: '#e6edf3',
               border: '1px solid #30363d',
               borderRadius: 8,
               padding: '10px 16px',
-              cursor: publicKey ? 'pointer' : 'not-allowed',
+              cursor: publicKeyHex ? 'pointer' : 'not-allowed',
               fontWeight: 600,
             }}
           >
@@ -500,14 +476,14 @@ export function App() {
 
           <button
             onClick={() => void startStreamingApproval()}
-            disabled={!publicKey}
+            disabled={!publicKeyHex}
             style={{
               background: '#238636',
               color: '#fff',
               border: 'none',
               borderRadius: 8,
               padding: '10px 20px',
-              cursor: publicKey ? 'pointer' : 'not-allowed',
+              cursor: publicKeyHex ? 'pointer' : 'not-allowed',
               fontWeight: 700,
             }}
           >
