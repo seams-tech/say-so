@@ -28,7 +28,7 @@
   "containers": [
     {
       "class_name": "SpeakerContainer",
-      "image": "../../crates/speaker-service/Dockerfile.cloudflare",
+      "image": "../../crates/speaker-service/Dockerfile",
       "max_instances": 4,
       "instance_type": "standard-1"
     }

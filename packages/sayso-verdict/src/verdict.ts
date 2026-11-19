@@ -3,6 +3,8 @@
  * Works identically in browsers, Node 20+, Cloudflare Workers, Deno, and Bun.
  */
 
+import type { VerdictReplayGuard } from './replay.ts';
+
 export const VERDICT_DOMAIN = 'sayso:verdict:v1';
 export const VERDICT_KIND = 'sayso_verdict_v1';
 export const VERDICT_LIFE_MS = 120_000;
@@ -42,7 +44,8 @@ export type VerdictRefusal =
   | { code: 'action_mismatch'; verdict: SaySoVerdict }
   | { code: 'intent_mismatch'; verdict: SaySoVerdict }
   | { code: 'spoken_text_mismatch'; verdict: SaySoVerdict }
-  | { code: 'audio_mismatch'; verdict: SaySoVerdict };
+  | { code: 'audio_mismatch'; verdict: SaySoVerdict }
+  | { code: 'verdict_replayed'; verdict: SaySoVerdict };
 
 export type VerdictCheck =
   | { ok: true; verdict: SaySoVerdict }
@@ -70,6 +73,8 @@ export interface VerifyVerdictInput {
   audioDigest?: Digest;
   /** Override clock in ms since UNIX epoch. Default: `Date.now()`. */
   nowMs?: number;
+  /** Optional single-use replay guard to reject duplicate verdict submissions before expiry. */
+  replayGuard?: VerdictReplayGuard;
 }
 
 const VERDICT_FIELDS = [
@@ -141,6 +146,15 @@ export async function verifyVerdict(input: VerifyVerdictInput): Promise<VerdictC
   }
   if (input.audioDigest !== undefined && !sameDigest(verdict.audio_digest, input.audioDigest)) {
     return { ok: false, refusal: { code: 'audio_mismatch', verdict } };
+  }
+  if (input.replayGuard !== undefined) {
+    if (!verdict.audio_digest) {
+      return { ok: false, refusal: { code: 'malformed', detail: 'accepted verdict missing audio_digest' } };
+    }
+    const fresh = await input.replayGuard.consumeOnce(verdict.audio_digest, verdict.expires_at_ms);
+    if (!fresh) {
+      return { ok: false, refusal: { code: 'verdict_replayed', verdict } };
+    }
   }
 
   return { ok: true, verdict };

@@ -1,10 +1,11 @@
-//! The HTTP server. Environment:
+//! SaySo ReDimNet B1 HTTP speaker-embedding container service.
+//!
+//! Environment:
 //! - `SPEAKER_LISTEN`: listen address, default `0.0.0.0:8080`.
-//! - `SPEAKER_MODEL_PATH`: default `/app/redimnet-b1.onnx`.
-//! - `DSTACK_SOCKET`: default `/var/run/dstack.sock`.
-//! - `SPEAKER_DEV_KEY_HEX`: a 32-byte ed25519 seed for a run outside a CVM. If
-//!   it is set, the service does not call the guest agent, and
-//!   `/v1/attestation` has no quote (`"dev": true`).
+//! - `SPEAKER_MODEL_PATH`: path to `redimnet-b1.onnx`, default `/app/redimnet-b1.onnx`.
+//! - `SPEAKER_SIGNING_KEY_HEX`: optional 64-char hex Ed25519 seed (if unset, generates
+//!   a fresh ephemeral Ed25519 key from `/dev/urandom` on container boot).
+use std::io::Read as _;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -16,29 +17,20 @@ use axum::{Json, Router};
 use base64::Engine as _;
 use ed25519_dalek::{Signer, SigningKey};
 use serde::Deserialize;
-use serde_json::{json, Value};
-use tokio::sync::{OnceCell, Semaphore};
+use serde_json::json;
+use tokio::sync::Semaphore;
 
-use seams_speaker_service::dstack::{self, Client};
-use seams_speaker_service::model::Model;
-use seams_speaker_service::{
-    decode_wav, embed_message, embedding_bytes, model_sha256, parse_nonce, report_data, sha256, KEY_DOMAIN,
-    MODEL_SHA256,
+use sayso_speaker_service::model::Model;
+use sayso_speaker_service::{
+    decode_wav, embed_message, embedding_bytes, model_sha256, parse_nonce, sha256, MODEL_SHA256,
 };
 
-/// An 8 s WAV is 256,044 bytes, so 342 KB in base64.
 const MAX_BODY_BYTES: usize = 512 * 1024;
 
 struct Service {
     model: Model,
     key: SigningKey,
     public_key: [u8; 32],
-    /// The GetKey signature chain (hex links), empty in dev mode.
-    signature_chain: Vec<String>,
-    /// `None` in dev mode.
-    agent: Option<Client>,
-    attestation: OnceCell<Value>,
-    /// One model run per CPU at a time; more requests wait.
     runs: Semaphore,
 }
 
@@ -60,7 +52,8 @@ async fn embed(State(service): State<Arc<Service>>, body: axum::body::Bytes) -> 
     let Ok(nonce) = parse_nonce(&request.nonce) else {
         return error(StatusCode::BAD_REQUEST, "bad_nonce");
     };
-    let Ok(wav) = base64::engine::general_purpose::STANDARD.decode(request.audio_wav_b64.trim()) else {
+    let Ok(wav) = base64::engine::general_purpose::STANDARD.decode(request.audio_wav_b64.trim())
+    else {
         return error(StatusCode::BAD_REQUEST, "bad_base64");
     };
     let audio_digest = sha256(&wav);
@@ -95,107 +88,59 @@ async fn embed(State(service): State<Arc<Service>>, body: axum::body::Bytes) -> 
         "nonce": hex::encode(nonce),
         "public_key": hex::encode(service.public_key),
         "signature": hex::encode(signature.to_bytes()),
-        // Not signed: timing for the latency probe.
         "model_ms": model_ms,
         "total_ms": started.elapsed().as_millis() as u64,
     }))
     .into_response()
 }
 
-async fn attestation(State(service): State<Arc<Service>>) -> Response {
-    let data = report_data(&service.public_key, &model_sha256());
-    let base = json!({
+async fn public_key(State(service): State<Arc<Service>>) -> Response {
+    Json(json!({
         "public_key": hex::encode(service.public_key),
         "model_sha256": MODEL_SHA256,
-        "report_data": hex::encode(data),
-        "key_domain": KEY_DOMAIN,
-        "key_algorithm": "ed25519",
-        "signature_chain": service.signature_chain,
-    });
-    let Some(agent) = &service.agent else {
-        let mut value = base;
-        value["quote"] = Value::Null;
-        value["dev"] = json!(true);
-        return Json(value).into_response();
-    };
-    // One attestation for the life of the process: report_data is fixed.
-    let result = service
-        .attestation
-        .get_or_try_init(|| async {
-            let attestation = agent.attest(&data).await?;
-            let quote = dstack::quote_from_attestation(&attestation);
-            let mut value = base.clone();
-            value["quote"] = quote.map_or(Value::Null, |quote| json!(hex::encode(quote)));
-            value["attestation"] = json!(hex::encode(&attestation));
-            value["dev"] = json!(false);
-            anyhow::Ok(value)
-        })
-        .await;
-    match result {
-        Ok(value) => Json(value.clone()).into_response(),
-        Err(cause) => {
-            eprintln!("attest: {cause:#}");
-            error(StatusCode::SERVICE_UNAVAILABLE, "attest_failed")
-        }
-    }
+    }))
+    .into_response()
 }
 
-async fn key(agent: Option<&Client>) -> anyhow::Result<(SigningKey, Vec<String>)> {
-    if let Ok(text) = std::env::var("SPEAKER_SIGNING_KEY_HEX").or_else(|_| std::env::var("SPEAKER_DEV_KEY_HEX")) {
+fn load_signing_key() -> anyhow::Result<SigningKey> {
+    if let Ok(text) = std::env::var("SPEAKER_SIGNING_KEY_HEX") {
         let mut seed = [0; 32];
         hex::decode_to_slice(text.trim(), &mut seed)
-            .map_err(|_| anyhow::anyhow!("SPEAKER_SIGNING_KEY_HEX / SPEAKER_DEV_KEY_HEX is not 64 hex characters"))?;
-        return Ok((SigningKey::from_bytes(&seed), Vec::new()));
-    }
-    if let Some(agent) = agent {
-        let reply = agent.get_ed25519_key(KEY_DOMAIN).await?;
-        let seed: [u8; 32] = reply.key.as_slice().try_into()?;
-        let key = SigningKey::from_bytes(&seed);
-        if key.verifying_key().as_bytes()[..] != reply.public_key[..] {
-            anyhow::bail!("GetKey: the public key is not the key of the returned seed");
-        }
-        return Ok((key, reply.signature_chain));
+            .map_err(|_| anyhow::anyhow!("SPEAKER_SIGNING_KEY_HEX must be 64 hex characters"))?;
+        return Ok(SigningKey::from_bytes(&seed));
     }
     let mut seed = [0u8; 32];
     let mut urandom = std::fs::File::open("/dev/urandom")?;
-    std::io::Read::read_exact(&mut urandom, &mut seed)?;
-    Ok((SigningKey::from_bytes(&seed), Vec::new()))
+    urandom.read_exact(&mut seed)?;
+    Ok(SigningKey::from_bytes(&seed))
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let listen = std::env::var("SPEAKER_LISTEN").unwrap_or_else(|_| "0.0.0.0:8080".into());
-    let model_path = std::env::var("SPEAKER_MODEL_PATH").unwrap_or_else(|_| "/app/redimnet-b1.onnx".into());
-    let socket_path = std::env::var("DSTACK_SOCKET").unwrap_or_else(|_| dstack::DEFAULT_SOCKET.into());
-    let has_env_key =
-        std::env::var_os("SPEAKER_SIGNING_KEY_HEX").is_some() || std::env::var_os("SPEAKER_DEV_KEY_HEX").is_some();
-    let has_dstack = !has_env_key && std::path::Path::new(&socket_path).exists();
-    let dev = !has_dstack;
-    let agent = has_dstack.then(|| Client::new(socket_path));
+    let model_path =
+        std::env::var("SPEAKER_MODEL_PATH").unwrap_or_else(|_| "/app/redimnet-b1.onnx".into());
 
     let started = Instant::now();
     let model = tokio::task::spawn_blocking(move || Model::load(&model_path)).await??;
     let load_ms = started.elapsed().as_millis();
-    let (key, signature_chain) = key(agent.as_ref()).await?;
-    let public_key = key.verifying_key().to_bytes();
+    let key = load_signing_key()?;
+    let public_key_bytes = key.verifying_key().to_bytes();
     let cpus = std::thread::available_parallelism().map_or(1, |n| n.get());
     eprintln!(
-        "speaker-service: model {MODEL_SHA256} plan_ms={load_ms} public_key={} dev={dev} runs={cpus} listen={listen}",
-        hex::encode(public_key)
+        "sayso-speaker-service: model {MODEL_SHA256} plan_ms={load_ms} public_key={} runs={cpus} listen={listen}",
+        hex::encode(public_key_bytes)
     );
 
     let service = Arc::new(Service {
         model,
         key,
-        public_key,
-        signature_chain,
-        agent,
-        attestation: OnceCell::new(),
+        public_key: public_key_bytes,
         runs: Semaphore::new(cpus),
     });
     let app = Router::new()
         .route("/v1/embed", post(embed))
-        .route("/v1/attestation", get(attestation))
+        .route("/v1/public-key", get(public_key))
         .route("/healthz", get(|| async { "ok" }))
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .with_state(service);

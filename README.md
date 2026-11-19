@@ -13,10 +13,10 @@ Any backend verifies the verdict with standard WebCrypto Ed25519 via `@sayso/ver
 ```mermaid
 flowchart LR
   Mic["Browser AudioWorklet<br/>16 kHz mono PCM16"]
-  Worker["Cloudflare Worker<br/>+ sayso-wasm"]
+  Worker["Cloudflare Worker<br/>+ sayso-wasm (188 KB)"]
   Nova["Workers AI<br/>@cf/deepgram/nova-3 WS"]
   Speaker["Cloudflare Container<br/>ReDimNet B1 AVX2 (scale-to-zero)"]
-  DO["SQLite Durable Object<br/>AccountVoiceDO"]
+  DO["SQLite Durable Object<br/>AccountVoiceDO (SVT1 + Replay + Rate Limit)"]
   Sign["WebCrypto Ed25519<br/>sayso_verdict_v1"]
 
   Mic -->|"wss:///v1/stream live PCM"| Worker
@@ -26,11 +26,25 @@ flowchart LR
   Worker --> Sign
 ```
 
-## Verifying a Verdict in Any Backend (`@sayso/verdict`)
+## Verifying a Verdict & Minting Enrollment Tokens (`@sayso/verdict`)
 
 ```ts
-import { createIntent, verifyVerdict } from '@sayso/verdict';
+import {
+  createEnrollmentToken,
+  createIntent,
+  MemoryVerdictReplayGuard,
+  verifyVerdict,
+} from '@sayso/verdict';
 
+// 1. Mint a short-lived enrollment token on your authenticated backend so the browser
+//    can enroll `alice@acme.com` directly with the SaySo Worker:
+const enrollmentToken = await createEnrollmentToken({
+  userId: 'alice@acme.com',
+  secret: process.env.SAYSO_ENROLL_SECRET!,
+});
+
+// 2. Verify a signed verdict on your backend (with single-use replay protection):
+const replayGuard = new MemoryVerdictReplayGuard(); // or Redis/SQL VerdictReplayGuard
 const { intentDigest } = await createIntent({
   userId: 'alice@acme.com',
   action: 'stripe/payout',
@@ -45,19 +59,11 @@ const result = await verifyVerdict({
   userId: 'alice@acme.com',
   action: 'stripe/payout',
   intentDigest,
+  replayGuard,
 });
 
 if (!result.ok) throw new Error(result.refusal.code);
 ```
-
-## Repository Layout
-
-- `crates/sayso-wasm` — Pure Rust `wasm32-unknown-unknown` core (spoken-English & currency/number normalization, negation/number guards, `SVT1` speaker templates, `sayso_verdict_v1` builder).
-- `crates/speaker-service` — `axum` + `tract-onnx` ReDimNet B1 embedding service + `Dockerfile.cloudflare` (pure scale-to-zero Cloudflare Container).
-- `packages/sayso-verdict` — Zero-dependency `@sayso/verdict` TypeScript library (`createIntent`, `verifyVerdict`, `canonicalWav`, `audioDigest`).
-- `packages/sayso-client` — `@sayso/client` browser `AudioWorklet` PCM streamer + WebSocket/HTTP SDK.
-- `workers/verifier` — Cloudflare Worker (`sayso-verifier`), `AccountVoiceDO`, and `SpeakerContainer`.
-- `demo` — Vite + React live streaming demo.
 
 ## Quick Start
 
@@ -67,18 +73,25 @@ pnpm test
 pnpm typecheck
 ```
 
-### Offline Local UI Testing (`SAYSO_DEV_MOCK=true`)
+### One-Command Offline Local UI Testing (`SAYSO_DEV_MOCK=true`)
 
 ```bash
 cp workers/verifier/.dev.vars.example workers/verifier/.dev.vars
-pnpm dev:worker   # Terminal 1 (:8787)
-pnpm dev:demo     # Terminal 2 (:5179)
+pnpm dev   # Launches Worker (:8787, local mock mode) + Demo (:5179) together
 ```
 
 ### Deploy to Cloudflare
 
 ```bash
 cd workers/verifier
+# 1. Verdict Ed25519 signing seed (required; Worker fails closed in production if unset):
 openssl rand -hex 32 | npx wrangler secret put VERDICT_SECRET_KEY_HEX
+# 2. Enrollment auth secret (for short-lived HMAC browser enrollment tokens):
+openssl rand -hex 32 | npx wrangler secret put SAYSO_ENROLL_SECRET
+# (Optional) Server-to-server Bearer API key for proxied enrollments:
+openssl rand -hex 32 | npx wrangler secret put SAYSO_API_KEY
+# 3. Deploy Worker + SQLite AccountVoiceDO + scale-to-zero SpeakerContainer:
 npx wrangler deploy
 ```
+
+> To host `redimnet-b1.onnx` in your own R2 bucket or GitHub Release, override `MODEL_URL` in [`crates/speaker-service/Dockerfile`](crates/speaker-service/Dockerfile); the SHA-256 pin (`e04dd7a6a1e23fc7b89e47682ea9d0a3946cf7bc59d07922c3db3efc52ae4269`) is verified at both image build and container boot.

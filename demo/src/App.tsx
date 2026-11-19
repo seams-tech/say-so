@@ -227,37 +227,49 @@ export function App() {
       }
     }
 
-    const mic = await startLiveMicrophonePcm({
-      silenceEndMs: 480,
-      onFrame(frame, _rms, speaking) {
-        if (speaking) lastSpeechFrameMs = performance.now();
-        session.sendPcmFrame(frame);
-      },
-      onSpeechEnd() {
-        session.finishSpeech();
-      },
-    });
-
     try {
-      const outcome = await session.result;
-      const postSpeechMs = Math.max(0, Math.round(performance.now() - lastSpeechFrameMs));
-      recognition?.stop();
-      await mic.stop();
-      setLastResult({
-        wire: outcome.wire,
-        checked: outcome.checked,
-        closedBy: outcome.closedBy,
-        postSpeechMs,
+      const mic = await startLiveMicrophonePcm({
+        silenceEndMs: 480,
+        onFrame(frame, _rms, speaking) {
+          if (speaking) lastSpeechFrameMs = performance.now();
+          session.sendPcmFrame(frame);
+        },
+        onSpeechEnd() {
+          session.finishSpeech();
+        },
       });
-      setStatus(
-        outcome.checked.ok
-          ? `Approved in ${postSpeechMs} ms post-speech (${outcome.closedBy})!`
-          : `Refused (${outcome.checked.refusal.code})`,
-      );
+
+      try {
+        const outcome = await session.result;
+        const postSpeechMs = Math.max(0, Math.round(performance.now() - lastSpeechFrameMs));
+        recognition?.stop();
+        await mic.stop();
+        setLastResult({
+          wire: outcome.wire,
+          checked: outcome.checked,
+          closedBy: outcome.closedBy,
+          postSpeechMs,
+        });
+        if (outcome.checked.ok) {
+          setStatus(`Approved in ${postSpeechMs} ms post-speech (${outcome.closedBy})!`);
+        } else if (outcome.checked.refusal.code === 'refused') {
+          const reason = outcome.checked.refusal.reason ?? 'refused';
+          const heard = outcome.checked.refusal.verdict.heard;
+          setStatus(heard ? `Refused (${reason}) — heard "${heard}"` : `Refused (${reason})`);
+        } else {
+          setStatus(`Refused (${outcome.checked.refusal.code})`);
+        }
+      } catch (err) {
+        recognition?.stop();
+        await mic.stop();
+        setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      }
     } catch (err) {
       recognition?.stop();
-      await mic.stop();
-      setStatus(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      session.abort();
+      setStatus(
+        `Microphone unavailable: ${err instanceof Error ? err.message : String(err)}. Check browser mic permissions.`,
+      );
     }
   }
 
@@ -520,9 +532,27 @@ export function App() {
             padding: 20,
           }}
         >
-          <h3 style={{ marginTop: 0 }}>
-            {lastResult.checked.ok ? 'Verified Ed25519 SaySo Verdict' : 'Refused Verdict'}
-          </h3>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+            <h3 style={{ margin: 0 }}>
+              {lastResult.checked.ok ? 'Verified Ed25519 SaySo Verdict' : 'Refused Verdict'}
+            </h3>
+            {!lastResult.checked.ok && (
+              <button
+                onClick={() => void startStreamingApproval()}
+                style={{
+                  background: '#21262d',
+                  color: '#e6edf3',
+                  border: '1px solid #30363d',
+                  borderRadius: 6,
+                  padding: '6px 12px',
+                  cursor: 'pointer',
+                  fontWeight: 600,
+                }}
+              >
+                Try again
+              </button>
+            )}
+          </div>
           <div style={{ fontSize: 13, color: '#8b949e', marginBottom: 12 }}>
             Closed by: <code>{lastResult.closedBy}</code> | Post-speech wait:{' '}
             <strong>{lastResult.postSpeechMs} ms</strong> | Worker stages:{' '}

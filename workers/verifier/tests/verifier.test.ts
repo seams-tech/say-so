@@ -4,8 +4,9 @@ import { dirname, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { pcm16ToLeBytes, toBase64, type StreamServerMessage } from '@sayso/client';
-import { audioDigest, createIntent, pcm16ToCanonicalWav, verifyVerdict } from '@sayso/verdict';
+import { audioDigest, createEnrollmentToken, createIntent, pcm16ToCanonicalWav, verifyVerdict } from '@sayso/verdict';
 import type { StoredVoiceTemplate, VoiceStore } from '../src/accountVoiceDo.ts';
+import { authorizeEnrollment, resolveCorsOrigin } from '../src/auth.ts';
 import { createVerdictSignerFromSeedHex } from '../src/crypto.ts';
 import { SaySoEngine } from '../src/engine.ts';
 import {
@@ -293,4 +294,74 @@ test('Opt-in SAYSO_DEV_MOCK=true offline mode enrolls spectral voiceprint and si
   if (checked.ok) {
     assert.equal(checked.verdict.verifier, 'sayso/0.2.0+mock');
   }
+});
+
+test('Enrollment auth fails closed in production and accepts Bearer API key or HMAC token', async () => {
+  const req = new Request('https://sayso.example/v1/enroll', { method: 'POST' });
+
+  // Production with no secrets configured -> 503 fail-closed.
+  const unconfigured = await authorizeEnrollment({
+    request: req,
+    userId: 'alice@acme.com',
+    env: {},
+  });
+  assert.deepEqual(unconfigured, { ok: false, status: 503, reason: 'enrollment_auth_not_configured' });
+
+  // Mock mode with no secrets -> allowed for offline local dev.
+  const devMock = await authorizeEnrollment({
+    request: req,
+    userId: 'alice@acme.com',
+    env: { SAYSO_DEV_MOCK: 'true' },
+  });
+  assert.deepEqual(devMock, { ok: true, method: 'dev_mock' });
+
+  // Server-to-server Bearer API key.
+  const bearerReq = new Request('https://sayso.example/v1/enroll', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer sk_live_123' },
+  });
+  const bearerOk = await authorizeEnrollment({
+    request: bearerReq,
+    userId: 'alice@acme.com',
+    env: { SAYSO_API_KEY: 'sk_live_123' },
+  });
+  assert.deepEqual(bearerOk, { ok: true, method: 'api_key' });
+
+  // Short-lived HMAC enrollment token bound to userId.
+  const nowMs = 1_760_000_000_000;
+  const token = await createEnrollmentToken({
+    userId: 'alice@acme.com',
+    secret: 'enroll-hmac-secret',
+    ttlMs: 60_000,
+    nowMs,
+  });
+  const tokenReq = new Request('https://sayso.example/v1/enroll', {
+    method: 'POST',
+    headers: { 'X-SaySo-Enroll-Token': token },
+  });
+  const tokenOk = await authorizeEnrollment({
+    request: tokenReq,
+    userId: 'alice@acme.com',
+    env: { SAYSO_ENROLL_SECRET: 'enroll-hmac-secret' },
+    nowMs: nowMs + 5_000,
+  });
+  assert.deepEqual(tokenOk, { ok: true, method: 'enroll_token' });
+
+  const wrongUser = await authorizeEnrollment({
+    request: tokenReq,
+    userId: 'bob@acme.com',
+    env: { SAYSO_ENROLL_SECRET: 'enroll-hmac-secret' },
+    nowMs: nowMs + 5_000,
+  });
+  assert.deepEqual(wrongUser, { ok: false, status: 401, reason: 'enroll_token_user_mismatch' });
+
+  // Strict comma-separated CORS allowlist.
+  const corsReq = new Request('https://sayso.example/v1/verify', {
+    headers: { Origin: 'https://app.example.com' },
+  });
+  assert.equal(
+    resolveCorsOrigin(corsReq, 'https://app.example.com, http://localhost:5179'),
+    'https://app.example.com',
+  );
+  assert.equal(resolveCorsOrigin(corsReq, 'https://other.example.com'), null);
 });

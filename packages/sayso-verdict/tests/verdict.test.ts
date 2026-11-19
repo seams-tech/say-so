@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { audioDigest, canonicalWav, createIntent, pcm16ToCanonicalWav, verdictMessage, verifyVerdict } from '../src/index.ts';
+import {
+  audioDigest,
+  canonicalWav,
+  createEnrollmentToken,
+  createIntent,
+  MemoryVerdictReplayGuard,
+  pcm16ToCanonicalWav,
+  verdictMessage,
+  verifyEnrollmentToken,
+  verifyVerdict,
+} from '../src/index.ts';
 
 function toBase64(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('base64');
@@ -10,7 +20,7 @@ function toBase64Url(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString('base64url');
 }
 
-test('createIntent, canonical WAV, and WebCrypto Ed25519 verifyVerdict round-trip', async () => {
+test('createIntent, canonical WAV, WebCrypto Ed25519 verifyVerdict, and VerdictReplayGuard', async () => {
   const keyPair = (await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])) as CryptoKeyPair;
   const pubKeyRaw = new Uint8Array(await crypto.subtle.exportKey('raw', keyPair.publicKey));
   const pubKeyHex = Buffer.from(pubKeyRaw).toString('hex');
@@ -50,6 +60,8 @@ test('createIntent, canonical WAV, and WebCrypto Ed25519 verifyVerdict round-tri
   const sig = new Uint8Array(await crypto.subtle.sign({ name: 'Ed25519' }, keyPair.privateKey, msg));
   const signatureB64 = toBase64(sig);
 
+  const replayGuard = new MemoryVerdictReplayGuard(() => nowMs + 5_000);
+
   const ok = await verifyVerdict({
     verdictJson,
     signatureB64,
@@ -60,10 +72,22 @@ test('createIntent, canonical WAV, and WebCrypto Ed25519 verifyVerdict round-tri
     spokenTextDigest: built.spokenTextDigest,
     audioDigest: aDigest,
     nowMs: nowMs + 5_000,
+    replayGuard,
   });
   assert.equal(ok.ok, true);
 
-  // Tampered payload digest fails with intent_mismatch.
+  // Submitting the exact same signed verdict twice fails with `verdict_replayed`.
+  const replayed = await verifyVerdict({
+    verdictJson,
+    signatureB64,
+    publicKey: pubKeyHex,
+    nowMs: nowMs + 6_000,
+    replayGuard,
+  });
+  assert.equal(replayed.ok, false);
+  if (!replayed.ok) assert.equal(replayed.refusal.code, 'verdict_replayed');
+
+  // Tampered payload digest fails with `intent_mismatch`.
   const otherIntent = await createIntent({
     userId: 'alice@acme.com',
     action: 'stripe/payout',
@@ -80,7 +104,7 @@ test('createIntent, canonical WAV, and WebCrypto Ed25519 verifyVerdict round-tri
   assert.equal(mismatch.ok, false);
   if (!mismatch.ok) assert.equal(mismatch.refusal.code, 'intent_mismatch');
 
-  // Expired verdict fails with expired.
+  // Expired verdict fails with `expired`.
   const expired = await verifyVerdict({
     verdictJson,
     signatureB64,
@@ -89,4 +113,47 @@ test('createIntent, canonical WAV, and WebCrypto Ed25519 verifyVerdict round-tri
   });
   assert.equal(expired.ok, false);
   if (!expired.ok) assert.equal(expired.refusal.code, 'expired');
+});
+
+test('HMAC enrollment tokens bind userId and expiry cleanly', async () => {
+  const secret = 'super-secret-enroll-key';
+  const nowMs = 1_760_000_000_000;
+  const token = await createEnrollmentToken({
+    userId: 'alice@acme.com',
+    secret,
+    ttlMs: 60_000,
+    nowMs,
+  });
+
+  const valid = await verifyEnrollmentToken({
+    token,
+    expectedUserId: 'alice@acme.com',
+    secret,
+    nowMs: nowMs + 10_000,
+  });
+  assert.equal(valid.ok, true);
+
+  const wrongUser = await verifyEnrollmentToken({
+    token,
+    expectedUserId: 'bob@acme.com',
+    secret,
+    nowMs: nowMs + 10_000,
+  });
+  assert.deepEqual(wrongUser, { ok: false, code: 'user_mismatch' });
+
+  const expired = await verifyEnrollmentToken({
+    token,
+    expectedUserId: 'alice@acme.com',
+    secret,
+    nowMs: nowMs + 65_000,
+  });
+  assert.deepEqual(expired, { ok: false, code: 'expired' });
+
+  const wrongSecret = await verifyEnrollmentToken({
+    token,
+    expectedUserId: 'alice@acme.com',
+    secret: 'wrong-secret',
+    nowMs: nowMs + 10_000,
+  });
+  assert.deepEqual(wrongSecret, { ok: false, code: 'bad_signature' });
 });

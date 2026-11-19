@@ -69,10 +69,17 @@ export class SaySoClient {
     return (await res.json()) as RenderWireOutput;
   }
 
-  async enroll(userId: string, wavClips: readonly [Uint8Array, Uint8Array, Uint8Array]): Promise<EnrollWireOutput> {
+  async enroll(
+    userId: string,
+    wavClips: readonly [Uint8Array, Uint8Array, Uint8Array],
+    auth?: { enrollmentToken?: string; apiKey?: string },
+  ): Promise<EnrollWireOutput> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (auth?.apiKey) headers.Authorization = `Bearer ${auth.apiKey}`;
+    if (auth?.enrollmentToken) headers['X-SaySo-Enroll-Token'] = auth.enrollmentToken;
     const res = await this.fetchImpl(`${this.baseUrl}/v1/enroll`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({
         user_id: userId,
         audio_wav_b64: wavClips.map((clip) => toBase64(clip)),

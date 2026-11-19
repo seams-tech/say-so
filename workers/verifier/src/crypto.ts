@@ -3,7 +3,7 @@
  * Standard hex/bytes Ed25519 only — zero chain-specific key encoding.
  */
 
-const SPEAKER_EMBED_DOMAIN = new TextEncoder().encode('seams:speaker-embedding:v1');
+const SPEAKER_EMBED_DOMAIN = new TextEncoder().encode('sayso:speaker-embedding:v1');
 
 /** Standard PKCS#8 ASN.1 prefix for a 32-byte Ed25519 private seed (RFC 8410). */
 const ED25519_PKCS8_PREFIX = new Uint8Array([

@@ -12,6 +12,7 @@
     "test:ts": "pnpm --filter @sayso/verdict test && pnpm --filter @sayso/client test && pnpm --filter @sayso/verifier-worker test",
     "test": "pnpm build:wasm && pnpm build:packages && pnpm test:rust && pnpm test:ts",
     "typecheck": "pnpm --filter @sayso/verdict type-check && pnpm --filter @sayso/client type-check && pnpm --filter @sayso/verifier-worker type-check && pnpm --filter @sayso/demo type-check",
+    "dev": "node scripts/dev.mjs",
     "dev:worker": "pnpm --filter @sayso/verifier-worker dev",
     "dev:demo": "pnpm --filter @sayso/demo dev"
   }
