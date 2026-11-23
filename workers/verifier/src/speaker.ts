@@ -40,11 +40,27 @@ export class SpeakerContainer {
     if (!container) {
       return Response.json({ error: 'container_binding_unavailable' }, { status: 503 });
     }
+    const port = container.getTcpPort(SpeakerContainer.defaultPort);
     if (!container.running) {
       container.start({ enableInternet: false });
+      await this.waitForReady(port);
     }
-    const port = container.getTcpPort(SpeakerContainer.defaultPort);
     return port.fetch(request);
+  }
+
+  private async waitForReady(port: {
+    fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
+  }): Promise<void> {
+    const deadline = Date.now() + 8_000;
+    while (Date.now() < deadline) {
+      try {
+        const res = await port.fetch('http://container/healthz');
+        if (res.ok) return;
+      } catch {
+        // Container process is still loading redimnet-b1.onnx and binding port 8080.
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
   }
 }
 

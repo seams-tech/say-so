@@ -1,6 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "sayso-verifier",
+  "account_id": "ea0d54352cf9d80e962154980504b428",
   "main": "src/index.ts",
   "compatibility_date": "2025-10-01",
   "ai": {

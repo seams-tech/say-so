@@ -3,7 +3,7 @@
 # Override MODEL_URL via `--build-arg MODEL_URL=https://<your-r2-or-release>/redimnet-b1.onnx`.
 # The exact SHA-256 digest is always cryptographically verified at build time and boot time.
 
-FROM --platform=linux/amd64 rust:1.97.1-slim-bookworm AS build
+FROM rust:1.97.1-slim-bookworm AS build
 ARG MODEL_URL="https://test.fastfs.io/seams-v1.testnet/outlayer.testnet/e04dd7a6a1e23fc7b89e47682ea9d0a3946cf7bc59d07922c3db3efc52ae4269.onnx"
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
@@ -14,7 +14,7 @@ RUN cargo build --release --target x86_64-unknown-linux-gnu \
  && curl -fsSL "${MODEL_URL}" -o /redimnet-b1.onnx \
  && echo "e04dd7a6a1e23fc7b89e47682ea9d0a3946cf7bc59d07922c3db3efc52ae4269  /redimnet-b1.onnx" | sha256sum -c -
 
-FROM --platform=linux/amd64 debian:bookworm-slim
+FROM debian:bookworm-slim
 COPY --from=build /speaker-service /usr/local/bin/speaker-service
 COPY --from=build /redimnet-b1.onnx /app/redimnet-b1.onnx
 RUN echo "e04dd7a6a1e23fc7b89e47682ea9d0a3946cf7bc59d07922c3db3efc52ae4269  /app/redimnet-b1.onnx" | sha256sum -c -
