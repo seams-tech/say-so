@@ -5,11 +5,13 @@ import {
   canonicalWav,
   createEnrollmentToken,
   createIntent,
+  createVerifyToken,
   MemoryVerdictReplayGuard,
   pcm16ToCanonicalWav,
   verdictMessage,
   verifyEnrollmentToken,
   verifyVerdict,
+  verifyVerifyToken,
 } from '../src/index.ts';
 
 function toBase64(bytes: Uint8Array): string {
@@ -156,4 +158,92 @@ test('HMAC enrollment tokens bind userId and expiry cleanly', async () => {
     nowMs: nowMs + 10_000,
   });
   assert.deepEqual(wrongSecret, { ok: false, code: 'bad_signature' });
+});
+
+test('HMAC verify tokens bind userId, optional intentDigest, and stay domain-separated from enrollment tokens', async () => {
+  const secret = 'shared-auth-secret';
+  const nowMs = 1_760_000_000_000;
+  const built = await createIntent({
+    userId: 'alice@acme.com',
+    action: 'stripe/payout',
+    payload: '{"amount_usd":45}',
+    sentence: 'Approve payout $45',
+  });
+  const other = await createIntent({
+    userId: 'alice@acme.com',
+    action: 'stripe/payout',
+    payload: '{"amount_usd":999}',
+    sentence: 'Approve payout $999',
+  });
+
+  const token = await createVerifyToken({
+    userId: 'alice@acme.com',
+    secret,
+    intentDigest: built.intentDigest,
+    ttlMs: 60_000,
+    nowMs,
+  });
+
+  const valid = await verifyVerifyToken({
+    token,
+    secret,
+    expectedUserId: 'alice@acme.com',
+    expectedIntentDigest: built.intentDigest,
+    nowMs: nowMs + 10_000,
+  });
+  assert.equal(valid.ok, true);
+  if (valid.ok) {
+    assert.equal(valid.userId, 'alice@acme.com');
+    assert.equal(valid.intentDigestB64u, toBase64Url(built.intentDigest));
+  }
+
+  // Wrong intent digest fails cleanly.
+  const wrongIntent = await verifyVerifyToken({
+    token,
+    secret,
+    expectedUserId: 'alice@acme.com',
+    expectedIntentDigest: other.intentDigest,
+    nowMs: nowMs + 10_000,
+  });
+  assert.deepEqual(wrongIntent, { ok: false, code: 'intent_mismatch' });
+
+  // Wrong user fails cleanly.
+  const wrongUser = await verifyVerifyToken({
+    token,
+    secret,
+    expectedUserId: 'bob@acme.com',
+    nowMs: nowMs + 10_000,
+  });
+  assert.deepEqual(wrongUser, { ok: false, code: 'user_mismatch' });
+
+  // Expired fails cleanly.
+  const expired = await verifyVerifyToken({
+    token,
+    secret,
+    nowMs: nowMs + 61_000,
+  });
+  assert.deepEqual(expired, { ok: false, code: 'expired' });
+
+  // Domain separation: verify token CANNOT pass verifyEnrollmentToken, and enrollment token CANNOT pass verifyVerifyToken.
+  const crossEnroll = await verifyEnrollmentToken({
+    token,
+    expectedUserId: 'alice@acme.com',
+    secret,
+    nowMs: nowMs + 10_000,
+  });
+  assert.deepEqual(crossEnroll, { ok: false, code: 'bad_signature' });
+
+  const enrollToken = await createEnrollmentToken({
+    userId: 'alice@acme.com',
+    secret,
+    ttlMs: 60_000,
+    nowMs,
+  });
+  const crossVerify = await verifyVerifyToken({
+    token: enrollToken,
+    expectedUserId: 'alice@acme.com',
+    secret,
+    nowMs: nowMs + 10_000,
+  });
+  assert.deepEqual(crossVerify, { ok: false, code: 'bad_signature' });
 });

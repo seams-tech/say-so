@@ -26,31 +26,41 @@ flowchart LR
   Worker --> Sign
 ```
 
-## Verifying a Verdict & Minting Enrollment Tokens (`@sayso/verdict`)
+## Verifying a Verdict & Minting Short-Lived Auth Tokens (`@sayso/verdict`)
+
+Every billable endpoint (`POST /v1/enroll`, `POST /v1/verify`, `GET /v1/stream`) fails closed at the Cloudflare edge unless authorized by a short-lived HMAC token (domain-separated per route) or a server-to-server `Authorization: Bearer <SAYSO_API_KEY>`, followed by per-user sliding-window rate limits in `AccountVoiceDO` before Workers AI or `SpeakerContainer` is invoked.
 
 ```ts
 import {
   createEnrollmentToken,
   createIntent,
+  createVerifyToken,
   MemoryVerdictReplayGuard,
   verifyVerdict,
 } from '@sayso/verdict';
 
-// 1. Mint a short-lived enrollment token on your authenticated backend so the browser
-//    can enroll `alice@acme.com` directly with the SaySo Worker:
+// 1. Mint a short-lived enrollment token on your backend for `POST /v1/enroll`:
 const enrollmentToken = await createEnrollmentToken({
   userId: 'alice@acme.com',
   secret: process.env.SAYSO_ENROLL_SECRET!,
 });
 
-// 2. Verify a signed verdict on your backend (with single-use replay protection):
-const replayGuard = new MemoryVerdictReplayGuard(); // or Redis/SQL VerdictReplayGuard
+// 2. Mint a short-lived verify/stream token (optionally bound to one exact `intentDigest`)
+//    so the browser can open `wss://.../v1/stream?token=...` or call `POST /v1/verify`:
 const { intentDigest } = await createIntent({
   userId: 'alice@acme.com',
   action: 'stripe/payout',
   payload: JSON.stringify({ recipient: 'acct_9182', amount_usd: 45 }),
   sentence: 'Approve payout $45',
 });
+const verifyToken = await createVerifyToken({
+  userId: 'alice@acme.com',
+  intentDigest,
+  secret: process.env.SAYSO_AUTH_SECRET ?? process.env.SAYSO_ENROLL_SECRET!,
+});
+
+// 3. Verify the returned signed verdict on your backend (with single-use replay protection):
+const replayGuard = new MemoryVerdictReplayGuard(); // or Redis/SQL VerdictReplayGuard
 
 const result = await verifyVerdict({
   verdictJson,
@@ -86,9 +96,10 @@ pnpm dev   # Launches Worker (:8787, local mock mode) + Demo (:5179) together
 cd workers/verifier
 # 1. Verdict Ed25519 signing seed (required; Worker fails closed in production if unset):
 openssl rand -hex 32 | npx wrangler secret put VERDICT_SECRET_KEY_HEX
-# 2. Enrollment auth secret (for short-lived HMAC browser enrollment tokens):
+# 2. HMAC auth secret for short-lived browser enroll + verify/stream tokens
+#    (optionally set a separate SAYSO_AUTH_SECRET for verify/stream; domain prefixes isolate both):
 openssl rand -hex 32 | npx wrangler secret put SAYSO_ENROLL_SECRET
-# (Optional) Server-to-server Bearer API key for proxied enrollments:
+# (Optional) Server-to-server Bearer API key for proxied backend calls:
 openssl rand -hex 32 | npx wrangler secret put SAYSO_API_KEY
 # 3. Deploy Worker + SQLite AccountVoiceDO + scale-to-zero SpeakerContainer:
 npx wrangler deploy

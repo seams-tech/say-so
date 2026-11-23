@@ -4,9 +4,16 @@ import { dirname, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { pcm16ToLeBytes, toBase64, type StreamServerMessage } from '@sayso/client';
-import { audioDigest, createEnrollmentToken, createIntent, pcm16ToCanonicalWav, verifyVerdict } from '@sayso/verdict';
+import {
+  audioDigest,
+  createEnrollmentToken,
+  createIntent,
+  createVerifyToken,
+  pcm16ToCanonicalWav,
+  verifyVerdict,
+} from '@sayso/verdict';
 import type { StoredVoiceTemplate, VoiceStore } from '../src/accountVoiceDo.ts';
-import { authorizeEnrollment, resolveCorsOrigin } from '../src/auth.ts';
+import { authorizeEnrollment, authorizeVerify, resolveCorsOrigin } from '../src/auth.ts';
 import { createVerdictSignerFromSeedHex } from '../src/crypto.ts';
 import { SaySoEngine } from '../src/engine.ts';
 import {
@@ -364,4 +371,157 @@ test('Enrollment auth fails closed in production and accepts Bearer API key or H
     'https://app.example.com',
   );
   assert.equal(resolveCorsOrigin(corsReq, 'https://other.example.com'), null);
+});
+
+test('Verify/stream auth fails closed, accepts verify tokens via header or ?token=, and blocks mismatched stream init before opening STT', async () => {
+  const req = new Request('https://sayso.example/v1/stream', { method: 'GET' });
+
+  // 1. Production with no secrets configured -> 503 fail-closed.
+  assert.deepEqual(await authorizeVerify({ request: req, env: {} }), {
+    ok: false,
+    status: 503,
+    reason: 'verify_auth_not_configured',
+  });
+
+  // 2. Opt-in SAYSO_DEV_MOCK=true -> allowed offline.
+  assert.deepEqual(await authorizeVerify({ request: req, env: { SAYSO_DEV_MOCK: 'true' } }), {
+    ok: true,
+    method: 'dev_mock',
+  });
+
+  // 3. Missing token when secret is configured -> 401.
+  assert.deepEqual(await authorizeVerify({ request: req, env: { SAYSO_ENROLL_SECRET: 'shared-secret' } }), {
+    ok: false,
+    status: 401,
+    reason: 'unauthorized_verify',
+  });
+
+  // 4. Valid verify token via ?token= (browser WS upgrade) using fallback SAYSO_ENROLL_SECRET.
+  const nowMs = 1_760_000_000_000;
+  const built = await createIntent({
+    userId: 'alice@acme.com',
+    action: 'stripe/payout',
+    payload: '{"amount_usd":45}',
+    sentence: 'Approve payout $45',
+  });
+  const other = await createIntent({
+    userId: 'alice@acme.com',
+    action: 'stripe/payout',
+    payload: '{"amount_usd":500}',
+    sentence: 'Approve payout $500',
+  });
+
+  const token = await createVerifyToken({
+    userId: 'alice@acme.com',
+    secret: 'shared-secret',
+    intentDigest: built.intentDigest,
+    ttlMs: 60_000,
+    nowMs,
+  });
+
+  const wsAuth = await authorizeVerify({
+    request: req,
+    queryToken: token,
+    env: { SAYSO_ENROLL_SECRET: 'shared-secret' },
+    nowMs: nowMs + 5_000,
+  });
+  assert.equal(wsAuth.ok, true);
+  if (wsAuth.ok) {
+    assert.equal(wsAuth.method, 'verify_token');
+    assert.equal(wsAuth.userId, 'alice@acme.com');
+    assert.ok(wsAuth.intentDigestB64u);
+  }
+
+  // 5. Enrollment token cannot authorize /v1/verify or /v1/stream even with same secret.
+  const enrollToken = await createEnrollmentToken({
+    userId: 'alice@acme.com',
+    secret: 'shared-secret',
+    ttlMs: 60_000,
+    nowMs,
+  });
+  assert.deepEqual(
+    await authorizeVerify({
+      request: req,
+      queryToken: enrollToken,
+      env: { SAYSO_ENROLL_SECRET: 'shared-secret' },
+      nowMs: nowMs + 5_000,
+    }),
+    { ok: false, status: 401, reason: 'verify_token_bad_signature' },
+  );
+
+  // 6. attachStreamSession enforces authorizedUserId and authorizedIntentDigestB64u BEFORE opening STT!
+  const wasm = await SaySoCore.fromBytes(wasmBytes);
+  const signer = await createVerdictSignerFromSeedHex('44'.repeat(32));
+  let sttOpenedCount = 0;
+  const engine = new SaySoEngine({
+    wasm,
+    signer,
+    voiceStore: createInMemoryVoiceStore(),
+    speaker: {
+      async embed() {
+        return null;
+      },
+    },
+    stt: {
+      async openStream() {
+        sttOpenedCount += 1;
+        return {
+          sendPcmChunk() {},
+          async finishAndFlush() {
+            return null;
+          },
+          close() {},
+        };
+      },
+      async transcribeBatch() {
+        return null;
+      },
+    },
+  });
+
+  const errors: Array<Extract<StreamServerMessage, { type: 'error' }>> = [];
+  let closedCount = 0;
+
+  // Wrong user_id on init -> rejected before stt.openStream()
+  const wrongUserSession = engine.attachStreamSession(
+    (msg) => {
+      if (msg.type === 'error') errors.push(msg);
+    },
+    () => {
+      closedCount += 1;
+    },
+    { authorizedUserId: 'alice@acme.com' },
+  );
+  await wrongUserSession.onTextMessage(
+    JSON.stringify({
+      type: 'init',
+      intent: { ...built.intent, user_id: 'bob@acme.com' },
+    }),
+  );
+  assert.equal(sttOpenedCount, 0);
+  assert.equal(closedCount, 1);
+  assert.equal(errors[0]?.reason, 'unauthorized_user');
+
+  // Wrong intent digest on init -> rejected before stt.openStream()
+  const wrongIntentSession = engine.attachStreamSession(
+    (msg) => {
+      if (msg.type === 'error') errors.push(msg);
+    },
+    () => {
+      closedCount += 1;
+    },
+    {
+      authorizedUserId: 'alice@acme.com',
+      authorizedIntentDigestB64u: wsAuth.ok ? wsAuth.intentDigestB64u : undefined,
+    },
+  );
+  await wrongIntentSession.onTextMessage(
+    JSON.stringify({
+      type: 'init',
+      intent: other.intent,
+    }),
+  );
+  assert.equal(sttOpenedCount, 0);
+  assert.equal(closedCount, 2);
+  assert.equal(errors[1]?.reason, 'unauthorized_intent');
 });

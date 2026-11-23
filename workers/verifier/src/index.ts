@@ -1,6 +1,6 @@
 import type { SaySoIntentInput } from '@sayso/verdict';
 import { AccountVoiceDO, createDurableObjectVoiceStore } from './accountVoiceDo.ts';
-import { authorizeEnrollment, resolveCorsOrigin, type AuthEnv } from './auth.ts';
+import { authorizeEnrollment, authorizeVerify, resolveCorsOrigin, type AuthEnv } from './auth.ts';
 import { createVerdictSignerFromSeedHex, type VerdictSigner } from './crypto.ts';
 import { SaySoEngine } from './engine.ts';
 import {
@@ -31,6 +31,9 @@ export interface Env extends AuthEnv {
 }
 
 const MOCK_DEV_SEED_HEX = '11'.repeat(32);
+const MAX_RENDER_BODY_BYTES = 16 * 1024;
+const MAX_VERIFY_BODY_BYTES = 512 * 1024;
+const MAX_ENROLL_BODY_BYTES = 1_600 * 1024;
 
 let cachedWasm: SaySoCore | null = null;
 let cachedSignerKeyHex: string | null = null;
@@ -63,13 +66,38 @@ function corsHeaders(request: Request, env: Env): Record<string, string> {
   const origin = resolveCorsOrigin(request, env.SAYSO_ALLOWED_ORIGIN);
   const headers: Record<string, string> = {
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-SaySo-Enroll-Token',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-SaySo-Enroll-Token, X-SaySo-Verify-Token',
   };
   if (origin) {
     headers['Access-Control-Allow-Origin'] = origin;
     if (origin !== '*') headers.Vary = 'Origin';
   }
   return headers;
+}
+
+async function readJsonBody<T>(
+  request: Request,
+  maxBytes: number,
+): Promise<{ ok: true; data: T } | { ok: false; status: 400 | 413; error: string }> {
+  const declaredLen = Number(request.headers.get('Content-Length'));
+  if (Number.isFinite(declaredLen) && declaredLen > maxBytes) {
+    return { ok: false, status: 413, error: 'payload_too_large' };
+  }
+  let buf: ArrayBuffer;
+  try {
+    buf = await request.arrayBuffer();
+  } catch {
+    return { ok: false, status: 400, error: 'invalid_body' };
+  }
+  if (buf.byteLength > maxBytes) {
+    return { ok: false, status: 413, error: 'payload_too_large' };
+  }
+  try {
+    const text = new TextDecoder().decode(buf);
+    return { ok: true, data: JSON.parse(text) as T };
+  } catch {
+    return { ok: false, status: 400, error: 'invalid_json' };
+  }
 }
 
 function jsonResponse(
@@ -171,6 +199,29 @@ export default {
       if (request.headers.get('Upgrade')?.toLowerCase() !== 'websocket') {
         return jsonResponse(request, { error: 'Expected WebSocket Upgrade' }, env, 426);
       }
+
+      // Gate WebSocket upgrade BEFORE opening WebSocketPair, Deepgram Nova-3, or SpeakerContainer.
+      const auth = await authorizeVerify({
+        request,
+        queryToken: url.searchParams.get('token') ?? undefined,
+        env,
+      });
+      if (!auth.ok) {
+        return jsonResponse(request, { error: auth.reason }, env, auth.status);
+      }
+
+      const rateKey = auth.userId ?? (auth.method === 'dev_mock' ? '__dev_mock__' : '__api_key__');
+      const rl = await voiceStore.checkRateLimit?.(rateKey, 'stream', 30, 60_000, Date.now());
+      if (rl && !rl.allowed) {
+        return jsonResponse(
+          request,
+          { error: 'rate_limited', retry_after_sec: rl.retryAfterSec },
+          env,
+          429,
+          { 'Retry-After': String(rl.retryAfterSec) },
+        );
+      }
+
       const engine = await buildEngine(env);
       const pair = new WebSocketPair();
       const [clientWs, serverWs] = Object.values(pair);
@@ -189,6 +240,10 @@ export default {
             // Ignore already-closed WebSocket.
           }
         },
+        {
+          authorizedUserId: auth.userId,
+          authorizedIntentDigestB64u: auth.intentDigestB64u,
+        },
       );
 
       serverWs.addEventListener('message', (event) => {
@@ -205,17 +260,24 @@ export default {
     }
 
     if (request.method === 'POST' && url.pathname === '/v1/render') {
+      const parsed = await readJsonBody<{ intent: SaySoIntentInput }>(request, MAX_RENDER_BODY_BYTES);
+      if (!parsed.ok) {
+        return jsonResponse(request, { error: parsed.error }, env, parsed.status);
+      }
       const engine = await buildEngine(env);
-      const body = (await request.json()) as { intent: SaySoIntentInput };
-      return jsonResponse(request, engine.render(body.intent), env);
+      return jsonResponse(request, engine.render(parsed.data.intent), env);
     }
 
     if (request.method === 'POST' && url.pathname === '/v1/enroll') {
-      const body = (await request.json()) as {
+      const parsed = await readJsonBody<{
         user_id: string;
         audio_wav_b64: string[];
         enrollment_token?: string;
-      };
+      }>(request, MAX_ENROLL_BODY_BYTES);
+      if (!parsed.ok) {
+        return jsonResponse(request, { error: parsed.error }, env, parsed.status);
+      }
+      const body = parsed.data;
       if (!body.user_id || typeof body.user_id !== 'string') {
         return jsonResponse(request, { error: 'invalid_user_id' }, env, 400);
       }
@@ -246,25 +308,50 @@ export default {
     }
 
     if (request.method === 'POST' && url.pathname === '/v1/verify') {
-      const body = (await request.json()) as {
+      const parsed = await readJsonBody<{
         intent: SaySoIntentInput;
         audio_wav_b64: string;
+        verify_token?: string;
         mock_transcript?: string;
-      };
-      if (body.intent?.user_id) {
-        const rl = await voiceStore.checkRateLimit?.(body.intent.user_id, 'verify', 30, 60_000, Date.now());
-        if (rl && !rl.allowed) {
-          return jsonResponse(
-            request,
-            { error: 'rate_limited', retry_after_sec: rl.retryAfterSec },
-            env,
-            429,
-            { 'Retry-After': String(rl.retryAfterSec) },
-          );
-        }
+      }>(request, MAX_VERIFY_BODY_BYTES);
+      if (!parsed.ok) {
+        return jsonResponse(request, { error: parsed.error }, env, parsed.status);
+      }
+      const body = parsed.data;
+      if (!body.intent?.user_id || typeof body.intent.user_id !== 'string') {
+        return jsonResponse(request, { error: 'invalid_intent' }, env, 400);
+      }
+
+      // Gate BEFORE AccountVoiceDO, Workers AI Whisper, or SpeakerContainer.
+      const auth = await authorizeVerify({
+        request,
+        expectedUserId: body.intent.user_id,
+        bodyToken: body.verify_token,
+        env,
+      });
+      if (!auth.ok) {
+        return jsonResponse(request, { error: auth.reason }, env, auth.status);
       }
 
       const engine = await buildEngine(env);
+      if (auth.intentDigestB64u) {
+        const rendered = engine.render(body.intent);
+        if (!rendered.ok || rendered.intent_digest_b64u !== auth.intentDigestB64u) {
+          return jsonResponse(request, { error: 'verify_token_intent_mismatch' }, env, 401);
+        }
+      }
+
+      const rl = await voiceStore.checkRateLimit?.(body.intent.user_id, 'verify', 30, 60_000, Date.now());
+      if (rl && !rl.allowed) {
+        return jsonResponse(
+          request,
+          { error: 'rate_limited', retry_after_sec: rl.retryAfterSec },
+          env,
+          429,
+          { 'Retry-After': String(rl.retryAfterSec) },
+        );
+      }
+
       return jsonResponse(
         request,
         await engine.verifyBatch({

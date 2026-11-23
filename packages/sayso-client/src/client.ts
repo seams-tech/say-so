@@ -29,6 +29,8 @@ export interface StreamVerifyOptions {
   intent: SaySoIntentInput;
   /** Locally computed 32-byte `intentDigest` from `createIntent()` to check against the signed verdict. */
   expectedIntentDigest?: Digest;
+  /** Short-lived HMAC verify token minted by your backend via `createVerifyToken()` (passed as `?token=...` on WS upgrade). */
+  verifyToken?: string;
   onReady?: (info: Extract<StreamServerMessage, { type: 'ready' }>) => void;
   onTranscript?: (update: Extract<StreamServerMessage, { type: 'transcript' }>) => void;
 }
@@ -92,10 +94,15 @@ export class SaySoClient {
     intent: SaySoIntentInput;
     wav: Uint8Array;
     expectedIntentDigest?: Digest;
+    verifyToken?: string;
+    apiKey?: string;
   }): Promise<{ wire: VerifyWireOutput; checked: VerdictCheck }> {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (params.apiKey) headers.Authorization = `Bearer ${params.apiKey}`;
+    if (params.verifyToken) headers['X-SaySo-Verify-Token'] = params.verifyToken;
     const res = await this.fetchImpl(`${this.baseUrl}/v1/verify`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({
         intent: params.intent,
         audio_wav_b64: toBase64(params.wav),
@@ -115,7 +122,10 @@ export class SaySoClient {
   }
 
   streamVerify(options: StreamVerifyOptions): StreamVerifySession {
-    const wsUrl = `${this.baseUrl.replace(/^http/, 'ws')}/v1/stream`;
+    const baseWsUrl = `${this.baseUrl.replace(/^http/, 'ws')}/v1/stream`;
+    const wsUrl = options.verifyToken
+      ? `${baseWsUrl}?token=${encodeURIComponent(options.verifyToken)}`
+      : baseWsUrl;
     const ws = this.wsFactory(wsUrl);
     ws.binaryType = 'arraybuffer';
 

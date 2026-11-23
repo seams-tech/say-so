@@ -14,6 +14,12 @@ import type { SaySoCore } from './wasm.ts';
 
 const MAX_PCM_BYTES = 8 * 16_000 * 2; // 8.0 s of 16 kHz PCM16 LE
 const MIN_EARLY_CLOSE_SAMPLES = 10_240; // >= 640 ms before early-closing on token match
+const DEFAULT_MAX_STREAM_MS = 15_000; // Hard wall-clock cap per stream session to protect STT billing
+
+export interface StreamAuthConstraints {
+  authorizedUserId?: string;
+  authorizedIntentDigestB64u?: string;
+}
 
 export interface EngineDeps {
   wasm: SaySoCore;
@@ -27,6 +33,8 @@ export interface EngineDeps {
   verifierVersion?: string;
   /** Trailing window after expected tokens match to catch negations like "... not". Default: 200 ms. */
   earlyCloseGuardMs?: number;
+  /** Hard wall-clock timeout once STT stream opens. Default: 15,000 ms. */
+  maxStreamMs?: number;
   now?: () => number;
 }
 
@@ -56,6 +64,7 @@ export class SaySoEngine {
   private readonly mockMode: boolean;
   private readonly verifierVersion: string;
   private readonly earlyCloseGuardMs: number;
+  private readonly maxStreamMs: number;
   private readonly now: () => number;
 
   constructor(deps: EngineDeps) {
@@ -63,6 +72,7 @@ export class SaySoEngine {
     this.mockMode = Boolean(deps.mockMode);
     this.verifierVersion = deps.verifierVersion ?? (this.mockMode ? 'sayso/0.2.0+mock' : 'sayso/0.2.0');
     this.earlyCloseGuardMs = deps.earlyCloseGuardMs ?? 200;
+    this.maxStreamMs = deps.maxStreamMs ?? DEFAULT_MAX_STREAM_MS;
     this.now = deps.now ?? (() => Date.now());
   }
 
@@ -194,7 +204,11 @@ export class SaySoEngine {
     });
   }
 
-  attachStreamSession(send: (msg: StreamServerMessage) => void, closeSocket: () => void): {
+  attachStreamSession(
+    send: (msg: StreamServerMessage) => void,
+    closeSocket: () => void,
+    authConstraints?: StreamAuthConstraints,
+  ): {
     onTextMessage: (raw: string) => Promise<void>;
     onBinaryChunk: (bytes: Uint8Array) => void;
     onDisconnect: () => void;
@@ -204,6 +218,7 @@ export class SaySoEngine {
     let initialized = false;
     let committed = false;
     let earlyCloseTimer: ReturnType<typeof setTimeout> | null = null;
+    let maxSessionTimer: ReturnType<typeof setTimeout> | null = null;
     let sttStream: SttLiveStream | null = null;
     let latestTranscript = '';
     let intent!: SaySoIntentInput;
@@ -215,12 +230,20 @@ export class SaySoEngine {
       }
     };
 
+    const clearMaxSessionTimer = () => {
+      if (maxSessionTimer !== null) {
+        clearTimeout(maxSessionTimer);
+        maxSessionTimer = null;
+      }
+    };
+
     const commit = async (
       closedBy: 'token_match' | 'stt_speech_final' | 'client_end' | 'max_duration',
     ) => {
       if (committed || !initialized) return;
       committed = true;
       clearEarlyTimer();
+      clearMaxSessionTimer();
 
       const commitStarted = this.now();
       const ms: Record<string, number> = {};
@@ -312,6 +335,17 @@ export class SaySoEngine {
           if (initialized) return;
           intent = msg.intent;
 
+          if (authConstraints?.authorizedUserId && intent?.user_id !== authConstraints.authorizedUserId) {
+            committed = true;
+            send({
+              type: 'error',
+              reason: 'unauthorized_user',
+              detail: 'intent user_id does not match verify token',
+            });
+            closeSocket();
+            return;
+          }
+
           const prepared = this.deps.wasm.call<{
             ok: boolean;
             sentence?: string;
@@ -328,6 +362,20 @@ export class SaySoEngine {
             committed = true;
             const out = await this.signRefusal(prepared.reason ?? 'unsupported', {}, this.now());
             send({ type: 'verdict', sampleCount: 0, closedBy: 'client_end', output: out });
+            closeSocket();
+            return;
+          }
+
+          if (
+            authConstraints?.authorizedIntentDigestB64u &&
+            prepared.intent_digest_b64u !== authConstraints.authorizedIntentDigestB64u
+          ) {
+            committed = true;
+            send({
+              type: 'error',
+              reason: 'unauthorized_intent',
+              detail: 'intent digest does not match verify token',
+            });
             closeSocket();
             return;
           }
@@ -385,6 +433,9 @@ export class SaySoEngine {
           }
 
           initialized = true;
+          maxSessionTimer = setTimeout(() => {
+            void commit('max_duration');
+          }, this.maxStreamMs);
           send({
             type: 'ready',
             sentence: prepared.sentence,
@@ -416,6 +467,7 @@ export class SaySoEngine {
       onDisconnect: () => {
         committed = true;
         clearEarlyTimer();
+        clearMaxSessionTimer();
         sttStream?.close();
       },
     };
