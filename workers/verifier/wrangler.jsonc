@@ -4,6 +4,14 @@
   "account_id": "ea0d54352cf9d80e962154980504b428",
   "main": "src/index.ts",
   "compatibility_date": "2025-10-01",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "sayso.seams.sh",
+      "custom_domain": true
+    }
+  ],
   "ai": {
     "binding": "AI"
   },
