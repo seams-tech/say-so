@@ -1,4 +1,4 @@
-import type { SaySoIntentInput } from '@sayso/verdict';
+import type { SaySoIntentInput } from '@seams/sayso-verdict';
 
 export interface VerifyWireOutput {
   kind: 'sayso_verify_output_v1';

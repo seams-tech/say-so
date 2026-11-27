@@ -4,8 +4,8 @@ import type {
   StreamClientMessage,
   StreamServerMessage,
   VerifyWireOutput,
-} from '@sayso/client';
-import type { SaySoIntentInput } from '@sayso/verdict';
+} from '@seams/sayso-client';
+import type { SaySoIntentInput } from '@seams/sayso-verdict';
 import type { VoiceStore } from './accountVoiceDo.ts';
 import { toBase64, type VerdictSigner } from './crypto.ts';
 import type { SpeakerClient } from './speaker.ts';

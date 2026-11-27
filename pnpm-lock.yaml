@@ -10,10 +10,10 @@ importers:
 
   demo:
     dependencies:
-      '@sayso/client':
+      '@seams/sayso-client':
         specifier: workspace:*
         version: link:../packages/sayso-client
-      '@sayso/verdict':
+      '@seams/sayso-verdict':
         specifier: workspace:*
         version: link:../packages/sayso-verdict
       react:
@@ -41,7 +41,7 @@ importers:
 
   packages/sayso-client:
     dependencies:
-      '@sayso/verdict':
+      '@seams/sayso-verdict':
         specifier: workspace:*
         version: link:../sayso-verdict
     devDependencies:
@@ -63,10 +63,10 @@ importers:
 
   workers/verifier:
     dependencies:
-      '@sayso/client':
+      '@seams/sayso-client':
         specifier: workspace:*
         version: link:../../packages/sayso-client
-      '@sayso/verdict':
+      '@seams/sayso-verdict':
         specifier: workspace:*
         version: link:../../packages/sayso-verdict
     devDependencies:

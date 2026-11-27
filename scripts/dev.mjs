@@ -8,7 +8,7 @@ const devVarsPath = resolve(root, 'workers/verifier/.dev.vars');
 const devVars = existsSync(devVarsPath) ? readFileSync(devVarsPath, 'utf8') : '';
 const isMock = /^\s*SAYSO_DEV_MOCK\s*=\s*true\s*$/im.test(devVars);
 
-const workerArgs = ['--filter', '@sayso/verifier-worker', 'exec', 'wrangler', 'dev', '--port', '8787'];
+const workerArgs = ['--filter', '@seams/sayso-verifier-worker', 'exec', 'wrangler', 'dev', '--port', '8787'];
 if (isMock) workerArgs.push('--local');
 
 console.log(
@@ -16,7 +16,7 @@ console.log(
 );
 
 const worker = spawn('pnpm', workerArgs, { cwd: root, stdio: 'inherit' });
-const demo = spawn('pnpm', ['--filter', '@sayso/demo', 'dev'], { cwd: root, stdio: 'inherit' });
+const demo = spawn('pnpm', ['--filter', '@seams/sayso-demo', 'dev'], { cwd: root, stdio: 'inherit' });
 
 let shuttingDown = false;
 function shutdown(code = 0) {

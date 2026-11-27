@@ -6,7 +6,7 @@ SaySo is a standalone, zero-Web3, Cloudflare-native spoken-intent authorization 
 
 SaySo checks **who spoke** (ReDimNet B1 192-float speaker template) and **which words were spoken** (spoken-English normalization with strict negation and number guards), then signs a compact 12-field Ed25519 JSON verdict (`sayso_verdict_v1`) bound to `user_id`, `action`, `intent_digest` (SHA-256 of your payload + sentence), and `audio_digest` (single-use canonical WAV SHA-256).
 
-Any backend verifies the verdict with standard WebCrypto Ed25519 via `@sayso/verdict` (zero dependencies).
+Any backend verifies the verdict with standard WebCrypto Ed25519 via `@seams/sayso-verdict` (zero dependencies).
 
 ## Architecture
 
@@ -26,7 +26,7 @@ flowchart LR
   Worker --> Sign
 ```
 
-## Verifying a Verdict & Minting Short-Lived Auth Tokens (`@sayso/verdict`)
+## Verifying a Verdict & Minting Short-Lived Auth Tokens (`@seams/sayso-verdict`)
 
 Every billable endpoint (`POST /v1/enroll`, `POST /v1/verify`, `GET /v1/stream`) fails closed at the Cloudflare edge unless authorized by a short-lived HMAC token (domain-separated per route) or a server-to-server `Authorization: Bearer <SAYSO_API_KEY>`, followed by per-user sliding-window rate limits in `AccountVoiceDO` before Workers AI or `SpeakerContainer` is invoked.
 
@@ -37,7 +37,7 @@ import {
   createVerifyToken,
   MemoryVerdictReplayGuard,
   verifyVerdict,
-} from '@sayso/verdict';
+} from '@seams/sayso-verdict';
 
 // 1. Mint a short-lived enrollment token on your backend for `POST /v1/enroll`:
 const enrollmentToken = await createEnrollmentToken({
@@ -141,3 +141,17 @@ npx wrangler deploy
 ```
 
 > To host `redimnet-b1.onnx` in your own R2 bucket or GitHub Release, override `MODEL_URL` in [`crates/speaker-service/Dockerfile`](crates/speaker-service/Dockerfile); the SHA-256 pin (`e04dd7a6a1e23fc7b89e47682ea9d0a3946cf7bc59d07922c3db3efc52ae4269`) is verified at both image build and container boot.
+
+## Packages and Releases
+
+| Package                                                 | npm                                                                          |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| [`@seams/sayso-verdict`](packages/sayso-verdict)        | [npmjs.com/package/@seams/sayso-verdict](https://www.npmjs.com/package/@seams/sayso-verdict) |
+| [`@seams/sayso-client`](packages/sayso-client)          | [npmjs.com/package/@seams/sayso-client](https://www.npmjs.com/package/@seams/sayso-client)   |
+
+Both packages have one exact version, and `@seams/sayso-client` depends on the same version of `@seams/sayso-verdict`. To release:
+
+1. Set the new version in both `package.json` files, and commit it on `main`.
+2. Run the workflow **Release the SaySo packages** (`.github/workflows/release.yml`) with that version. It tests, packs and publishes both packages with npm provenance. A version that is on npm already is skipped, so a failed run can run again.
+
+The workflow publishes through npm trusted publishing, with no npm token. For a new package name, run `scripts/npm-trust.sh` one time first, logged in to npm. npm trusts a workflow only for a package that exists, so the script publishes a placeholder `0.0.0-stage` (dist-tag `stage`) for a name that is not on npm yet.

@@ -6,7 +6,7 @@ import {
   type Digest,
   type SaySoIntentInput,
   type VerdictCheck,
-} from '@sayso/verdict';
+} from '@seams/sayso-verdict';
 import { pcm16ToLeBytes, toBase64 } from './pcm.ts';
 import type {
   EnrollWireOutput,

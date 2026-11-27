@@ -2,7 +2,7 @@
  * Edge authorization (enrollment + verify/stream HMAC tokens and Bearer API key)
  * and strict CORS origin allowlist helpers.
  */
-import { verifyEnrollmentToken, verifyVerifyToken } from '@sayso/verdict';
+import { verifyEnrollmentToken, verifyVerifyToken } from '@seams/sayso-verdict';
 
 export interface AuthEnv {
   SAYSO_API_KEY?: string;

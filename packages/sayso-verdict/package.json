@@ -1,9 +1,21 @@
 {
-  "name": "@sayso/verdict",
+  "name": "@seams/sayso-verdict",
   "version": "0.2.0",
   "type": "module",
   "description": "Zero-dependency WebCrypto Ed25519 verifier and intent digest builder for SaySo signed verdicts (`sayso_verdict_v1`).",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/seams-tech/say-so.git",
+    "directory": "packages/sayso-verdict"
+  },
+  "homepage": "https://github.com/seams-tech/say-so/tree/main/packages/sayso-verdict#readme",
+  "bugs": {
+    "url": "https://github.com/seams-tech/say-so/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -11,7 +23,9 @@
     }
   },
   "files": [
-    "dist/"
+    "dist/",
+    "README.md",
+    "LICENSE"
   ],
   "sideEffects": false,
   "scripts": {

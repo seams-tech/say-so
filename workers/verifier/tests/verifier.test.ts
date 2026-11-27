@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { pcm16ToLeBytes, toBase64, type StreamServerMessage } from '@sayso/client';
+import { pcm16ToLeBytes, toBase64, type StreamServerMessage } from '@seams/sayso-client';
 import {
   audioDigest,
   createEnrollmentToken,
@@ -11,7 +11,7 @@ import {
   createVerifyToken,
   pcm16ToCanonicalWav,
   verifyVerdict,
-} from '@sayso/verdict';
+} from '@seams/sayso-verdict';
 import type { StoredVoiceTemplate, VoiceStore } from '../src/accountVoiceDo.ts';
 import { authorizeEnrollment, authorizeVerify, resolveCorsOrigin } from '../src/auth.ts';
 import { createVerdictSignerFromSeedHex } from '../src/crypto.ts';
@@ -70,7 +70,7 @@ function createInMemoryVoiceStore(): VoiceStore {
   };
 }
 
-test('SaySo streaming early-close, trailing negation guard, replay guard, and @sayso/verdict check', async () => {
+test('SaySo streaming early-close, trailing negation guard, replay guard, and @seams/sayso-verdict check', async () => {
   const wasm = await SaySoCore.fromBytes(wasmBytes);
   const signer = await createVerdictSignerFromSeedHex('22'.repeat(32));
   const voiceStore = createInMemoryVoiceStore();

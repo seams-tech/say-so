@@ -3,12 +3,12 @@ import {
   SaySoClient,
   startLiveMicrophonePcm,
   type VerifyWireOutput,
-} from '@sayso/client';
+} from '@seams/sayso-client';
 import {
   createIntent,
   pcm16ToCanonicalWav,
   type VerdictCheck,
-} from '@sayso/verdict';
+} from '@seams/sayso-verdict';
 
 const DEFAULT_WORKER_URL = import.meta.env.VITE_SAYSO_URL ?? 'http://localhost:8787';
 

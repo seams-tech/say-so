@@ -1,4 +1,4 @@
-import type { SaySoIntentInput } from '@sayso/verdict';
+import type { SaySoIntentInput } from '@seams/sayso-verdict';
 import { AccountVoiceDO, createDurableObjectVoiceStore } from './accountVoiceDo.ts';
 import { authorizeEnrollment, authorizeVerify, resolveCorsOrigin, type AuthEnv } from './auth.ts';
 import { createVerdictSignerFromSeedHex, type VerdictSigner } from './crypto.ts';

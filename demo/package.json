@@ -1,5 +1,5 @@
 {
-  "name": "@sayso/demo",
+  "name": "@seams/sayso-demo",
   "private": true,
   "version": "0.2.0",
   "type": "module",
@@ -10,8 +10,8 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@sayso/client": "workspace:*",
-    "@sayso/verdict": "workspace:*",
+    "@seams/sayso-client": "workspace:*",
+    "@seams/sayso-verdict": "workspace:*",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
