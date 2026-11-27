@@ -79,10 +79,12 @@
           }
         ]
       },
+      // The lane runs the speaker image that the default Worker built and runs, so the lane
+      // needs no image build. Change the tag only to an image that the default Worker ran.
       "containers": [
         {
           "class_name": "SpeakerContainer",
-          "image": "../../crates/speaker-service/Dockerfile",
+          "image": "registry.cloudflare.com/ea0d54352cf9d80e962154980504b428/sayso-verifier-speakercontainer:2caac3c4",
           "max_instances": 4,
           "instance_type": "standard-1"
         }
