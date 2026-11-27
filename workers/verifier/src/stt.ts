@@ -44,8 +44,10 @@ export function createWorkersAiSttProvider(ai: WorkersAiBinding): SttProvider {
           sample_rate: '16000',
           channels: '1',
           interim_results: 'true',
-          numerals: 'true',
-          smart_format: 'true',
+          // No `numerals` and no `smart_format`: the words as spoken. With them, Nova-3 drops
+          // a spoken "point", so "nine hundred sixty two point one" reads "9621" and pays a
+          // request for 9,621 (bench/stt1, 2026-11-27). Without them it also reads more of the
+          // STT-1 sentences correctly.
           endpointing: '300',
         },
         { websocket: true },
