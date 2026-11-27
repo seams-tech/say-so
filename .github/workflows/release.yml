@@ -5,8 +5,11 @@ name: Release the SaySo packages
 #   2. @seams/sayso-client    the browser client; it depends on the exact version of 1
 #
 # A package whose version is on npm already is not published again, so a failed run can be run
-# again. npm trusted publishing must be set up for each package name on npmjs.com (repository
-# seams-tech/say-so, workflow release.yml); scripts/npm-trust.sh does it.
+# again. The workflow publishes through npm trusted publishing (repository seams-tech/say-so,
+# workflow release.yml). npm trusts a workflow only for a package that exists, so the first
+# release of a new name uses the repository secret NPM_TOKEN: a short-lived npm token with write
+# access to @seams. After that release, set up trusted publishing for each package on
+# npmjs.com, then delete the token and the secret.
 
 on:
   workflow_dispatch:
@@ -76,6 +79,9 @@ jobs:
       - name: Use npm trusted publishing
         run: npm install --global npm@latest
       - name: Publish, in dependency order
+        env:
+          # Empty unless the secret is set; npm then uses trusted publishing.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
           for package in sayso-verdict sayso-client; do

@@ -174,4 +174,9 @@ Both packages have one exact version, and `@seams/sayso-client` depends on the s
 1. Set the new version in both `package.json` files, and commit it on `main`.
 2. Run the workflow **Release the SaySo packages** (`.github/workflows/release.yml`) with that version. It tests, packs and publishes both packages with npm provenance. A version that is on npm already is skipped, so a failed run can run again.
 
-The workflow publishes through npm trusted publishing, with no npm token. For a new package name, run `scripts/npm-trust.sh` one time first, logged in to npm. npm trusts a workflow only for a package that exists, so the script publishes a placeholder `0.0.0-stage` (dist-tag `stage`) for a name that is not on npm yet.
+The workflow publishes through npm trusted publishing, with no npm token. npm trusts a workflow only for a package that exists, so the first release of a new package name needs a token:
+
+1. On npmjs.com, make a granular access token with read and write access to `@seams`, a short expiry, and two-factor bypass. Store it as the repository secret `NPM_TOKEN` (`gh secret set NPM_TOKEN --repo seams-tech/say-so`).
+2. Run the workflow. It publishes with the token and with provenance.
+3. On npmjs.com, open the settings of each package and add the trusted publisher: GitHub Actions, `seams-tech/say-so`, workflow `release.yml`. `scripts/npm-trust.sh` does the same from a terminal.
+4. Delete the token on npmjs.com and the secret (`gh secret delete NPM_TOKEN --repo seams-tech/say-so`).
