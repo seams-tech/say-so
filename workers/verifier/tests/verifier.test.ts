@@ -625,3 +625,61 @@ test('Mock mode signs only with the public mock seed, and production needs a rea
   // A real key with mock mode would sign results of the mock speaker and transcriber.
   assert.throws(() => verdictSeedHex({ configured: realSeed, mock: true }), /signs only with the mock seed/);
 });
+
+test('A transcriptOnly intent signs the transcript as written, and Rust and TypeScript normalize alike', async () => {
+  const wasm = await SaySoCore.fromBytes(wasmBytes);
+  const signer = await createVerdictSignerFromSeedHex('66'.repeat(32));
+  let heard = '';
+  const engine = new SaySoEngine({
+    wasm,
+    signer,
+    voiceStore: createInMemoryVoiceStore(),
+    speaker: {
+      async embed() {
+        return { embeddingLeB64: makeAxisEmbeddingB64(0, 0.04), modelMs: 12 };
+      },
+    },
+    stt: {
+      async openStream() {
+        throw new Error('this test uses the batch path');
+      },
+      async transcribeBatch() {
+        return heard;
+      },
+    },
+  });
+  const userId = 'near:testnet:alice.testnet';
+  await engine.enroll(userId, [0.08, 0.09, 0.1].map((s) => toBase64(pcm16ToCanonicalWav(makeToneSamples(900, s)))));
+  const transfer = { userId, action: 'seams.near.transfer', payloadSha256: '42'.repeat(32), sentence: 'send ten near to bob dot testnet' };
+  const transcriptOnly = await createIntent({ ...transfer, transcriptOnly: true });
+  const wordChecked = await createIntent(transfer);
+
+  heard = 'Send 10 NEAR to bob.testnet.';
+  const output = await engine.verifyBatch({
+    intent: transcriptOnly.intent,
+    audioWavB64: toBase64(pcm16ToCanonicalWav(makeToneSamples(950, 0.13))),
+  });
+  const checked = await verifyVerdict({
+    verdictJson: output.verdict_json,
+    signatureB64: output.signature_b64!,
+    publicKey: signer.publicKeyHex,
+    intentDigest: transcriptOnly.intentDigest,
+  });
+  assert.equal(checked.ok, true);
+  if (checked.ok) assert.equal(checked.verdict.heard, 'Send 10 NEAR to bob.testnet.');
+  // The verdict does not match the intent whose words SaySo would check.
+  const other = await verifyVerdict({
+    verdictJson: output.verdict_json,
+    signatureB64: output.signature_b64!,
+    publicKey: signer.publicKeyHex,
+    intentDigest: wordChecked.intentDigest,
+  });
+  assert.equal(!other.ok && other.refusal.code, 'intent_mismatch');
+
+  for (const sentence of ['Pay $5 to acct7 now', 'Send 8888net to seams-v1', "Don't send 2.50 to bob_2", 'route 07b 10%']) {
+    const ts = await createIntent({ ...transfer, sentence });
+    const rust = engine.render(ts.intent);
+    assert.deepEqual(rust.expected_tokens, ts.expectedTokens, sentence);
+    assert.equal(rust.intent_digest_b64u, Buffer.from(ts.intentDigest).toString('base64url'), sentence);
+  }
+});

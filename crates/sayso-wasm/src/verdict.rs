@@ -55,7 +55,8 @@ pub struct Verdict {
     pub reason: Option<Reason>,
     pub expires_at_ms: u64,
     pub speaker_score_milli: Option<i32>,
-    /// Populated only on a `words` refusal; always `null` on `accept`.
+    /// The normalized words heard, on a `words` refusal. For a transcript-only intent, the
+    /// transcript as written, on `accept`. Otherwise `null`.
     pub heard: Option<String>,
 }
 

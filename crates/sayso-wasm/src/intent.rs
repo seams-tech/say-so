@@ -7,6 +7,9 @@ use crate::verdict::Reason;
 use crate::words::{normalize_sentence_tokens, MAX_SENTENCE_WORDS};
 
 pub const INTENT_DIGEST_DOMAIN: &[u8] = b"sayso:intent:v1\0";
+/// The domain of a transcript-only intent. Its own domain keeps a verdict whose words SaySo did
+/// not check from ever matching the digest of an intent whose words SaySo checks.
+pub const TRANSCRIPT_INTENT_DIGEST_DOMAIN: &[u8] = b"sayso:intent:transcript:v1\0";
 pub const SPOKEN_TEXT_DIGEST_DOMAIN: &[u8] = b"sayso:spoken:v1\0";
 pub const MAX_USER_ID_BYTES: usize = 128;
 pub const MAX_ACTION_BYTES: usize = 64;
@@ -22,6 +25,11 @@ pub struct IntentInput {
     /// example the words of an amount and a recipient. Strictly ascending.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guarded_word_indexes: Vec<u32>,
+    /// SaySo checks the speaker and the audio but not the words: an accepted verdict carries
+    /// the transcript in `heard`, and the caller decides whether the words say the request.
+    /// An intent cannot have both this and `guarded_word_indexes`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub transcript_only: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,6 +42,7 @@ pub struct ValidatedIntent {
     pub display_text: String,
     /// Strictly ascending positions in `expected_tokens`.
     pub guarded_word_indexes: Vec<u8>,
+    pub transcript_only: bool,
 }
 
 pub fn validate_user_id(user_id: &str) -> Result<&str, Reason> {
@@ -78,6 +87,9 @@ pub fn validate_intent(input: &IntentInput) -> Result<ValidatedIntent, Reason> {
     }
     let guarded_word_indexes =
         validate_guarded_word_indexes(&input.guarded_word_indexes, expected_tokens.len())?;
+    if input.transcript_only && !guarded_word_indexes.is_empty() {
+        return Err(Reason::Unsupported);
+    }
     let canonical_sentence = expected_tokens.join(" ");
     Ok(ValidatedIntent {
         user_id,
@@ -87,6 +99,7 @@ pub fn validate_intent(input: &IntentInput) -> Result<ValidatedIntent, Reason> {
         canonical_sentence,
         display_text,
         guarded_word_indexes,
+        transcript_only: input.transcript_only,
     })
 }
 
@@ -111,9 +124,14 @@ fn validate_guarded_word_indexes(indexes: &[u32], word_count: usize) -> Result<V
 /// where `lp(b) = u32_le(b.len()) || b`. `guards` is `lp(guarded_word_indexes)` with one byte
 /// for each index, and it is empty for an intent with no guarded words. So such an intent
 /// keeps the digest that it had before guarded words, and each preimage still reads in one way.
+/// A transcript-only intent uses [`TRANSCRIPT_INTENT_DIGEST_DOMAIN`] in place of the first domain.
 pub fn intent_digest(intent: &ValidatedIntent) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(INTENT_DIGEST_DOMAIN);
+    hasher.update(if intent.transcript_only {
+        TRANSCRIPT_INTENT_DIGEST_DOMAIN
+    } else {
+        INTENT_DIGEST_DOMAIN
+    });
     update_lp(&mut hasher, intent.user_id.as_bytes());
     update_lp(&mut hasher, intent.action.as_bytes());
     hasher.update(intent.payload_sha256);
@@ -149,6 +167,7 @@ mod tests {
             payload_sha256_hex: "42".repeat(32),
             sentence: "send ten near to bob dot testnet".to_string(),
             guarded_word_indexes: guarded_word_indexes.to_vec(),
+            transcript_only: false,
         }
     }
 
@@ -169,6 +188,21 @@ mod tests {
             "a63e63c8e79f1e78101657310a9b5eedf1672fd5f55cf677db2be5accf86a583"
         );
         assert_ne!(digest_hex(&[1, 2, 4, 5]), digest_hex(&[1, 2, 4, 5, 6]));
+    }
+
+    /// `packages/sayso-verdict/tests/verdict.test.ts` pins the same value for `createIntent`.
+    #[test]
+    fn a_transcript_only_intent_has_its_own_digest_domain() {
+        let intent = IntentInput { transcript_only: true, ..transfer(&[]) };
+        let valid = validate_intent(&intent).expect("valid intent");
+        let digest = hex_string(&intent_digest(&valid));
+        assert_eq!(
+            digest,
+            "7f0d21a683dbffa7dd0678670db1a8d339e510c36548eb823408e3cca3100d9f"
+        );
+        assert_ne!(digest, digest_hex(&[]));
+        let both = IntentInput { transcript_only: true, ..transfer(&[1]) };
+        assert_eq!(validate_intent(&both), Err(Reason::Unsupported));
     }
 
     #[test]

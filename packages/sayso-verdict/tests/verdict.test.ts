@@ -273,3 +273,22 @@ test('guarded words extend the intent digest, and an intent with none keeps its 
     await assert.rejects(createIntent({ ...transfer, guardedWordIndexes: bad }), RangeError, JSON.stringify(bad));
   }
 });
+
+test('a transcriptOnly intent has its own digest domain and keeps the digits of a mixed word', async () => {
+  const transfer = {
+    userId: 'near:testnet:alice.testnet',
+    action: 'seams.near.transfer',
+    payloadSha256: '42'.repeat(32),
+    sentence: 'send ten near to bob dot testnet',
+  };
+  const toHex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex');
+  // `crates/sayso-wasm/src/intent.rs` pins the same value.
+  const built = await createIntent({ ...transfer, transcriptOnly: true });
+  assert.equal(toHex(built.intentDigest), '7f0d21a683dbffa7dd0678670db1a8d339e510c36548eb823408e3cca3100d9f');
+  assert.equal(built.intent.transcript_only, true);
+  assert.equal('transcript_only' in (await createIntent(transfer)).intent, false);
+  await assert.rejects(createIntent({ ...transfer, transcriptOnly: true, guardedWordIndexes: [1] }), RangeError);
+
+  const mixed = await createIntent({ ...transfer, sentence: 'Pay $5 to acct7 now' });
+  assert.equal(mixed.canonicalSentence, 'pay five dollars to acct seven now');
+});

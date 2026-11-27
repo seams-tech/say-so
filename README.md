@@ -111,6 +111,25 @@ The `guards` block is optional and the domain stays `v1`. The other choice was a
 - Each preimage still reads in one way: the sentence has a length prefix, and the block is never an empty list.
 - It fails closed. A Worker from before guarded words refuses an intent that has `guarded_word_indexes`, because it refuses unknown intent fields.
 
+A transcript-only intent (below) uses the domain `"sayso:intent:transcript:v1\0"` in place of `"sayso:intent:v1\0"`, with no `guards` block.
+
+## Transcript-Only Intents (`transcriptOnly`)
+
+Word matching suits a fixed sentence. It does not suit a sentence with free names and amounts: a transcriber writes "Send 8,888 NEAR to eric.testnet." for "send eight thousand eight hundred eighty eight near to erik dot testnet". On the STT-1 transaction sentences, SaySo's word check accepted 4.2% of correct readings ([bench/stt1](bench/stt1)). For such a request, let your own parser decide the words:
+
+```ts
+const { intent, intentDigest } = await createIntent({ userId, action, payload, sentence, transcriptOnly: true });
+// ... verify, then:
+const result = await verifyVerdict({ verdictJson, signatureB64, publicKey, userId, action, intentDigest });
+if (result.ok) parseMyRequest(result.verdict.heard); // "Send 8,888 NEAR to erik.testnet."
+```
+
+- SaySo checks the speaker, the audio and the single use of the recording, but not the words. An accepted verdict carries the transcript as written in `heard`, with its case and punctuation, cut to 200 bytes.
+- Your parser must refuse a transcript that does not say the request. An empty transcript refuses with `words`.
+- The intent digest has its own domain, so a transcript-only verdict never matches an intent whose words SaySo checks.
+- The stream (`/v1/stream`) does not close early on a word match for such an intent; it closes on the end of speech.
+- An intent cannot have both `transcriptOnly` and `guardedWordIndexes`.
+
 ## Quick Start
 
 ```bash

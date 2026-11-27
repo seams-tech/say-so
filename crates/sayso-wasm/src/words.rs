@@ -75,14 +75,28 @@ pub fn normalize_sentence_tokens(text: &str) -> Option<Vec<String>> {
                 out.extend(expanded);
                 continue;
             }
+            // Each run of letters is a word and each run of digits is a number, so "acct7"
+            // reads "acct seven" and never the same as "acct9".
             let cleaned: String = piece
                 .chars()
-                .filter(|c| c.is_ascii_alphabetic())
+                .filter(|c| c.is_ascii_alphanumeric())
                 .collect();
             if cleaned.is_empty() {
                 return None;
             }
-            out.push(cleaned);
+            let mut rest = cleaned.as_str();
+            while let Some(first) = rest.chars().next() {
+                let digits = first.is_ascii_digit();
+                let end = rest
+                    .find(|c: char| c.is_ascii_digit() != digits)
+                    .unwrap_or(rest.len());
+                if digits {
+                    out.extend(expand_number_token(&rest[..end])?);
+                } else {
+                    out.push(rest[..end].to_string());
+                }
+                rest = &rest[end..];
+            }
         }
     }
     if out.is_empty() {
@@ -263,6 +277,17 @@ fn forgivable_edit(heard: &[String], expected: &[String], prefix: usize, guarded
     }
 }
 
+/// The transcript as the transcriber wrote it, for a transcript-only verdict: its case and its
+/// punctuation stay ("Send 8,888 NEAR to erik.testnet."), because the caller's parser reads
+/// them. Control characters become spaces, and the text is cut to [`MAX_HEARD_BYTES`].
+pub fn transcript_text(text: &str) -> String {
+    let spaced: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    cut_at(&spaced.split_whitespace().collect::<Vec<_>>().join(" "), MAX_HEARD_BYTES)
+}
+
 pub fn printable(text: &str) -> String {
     text.chars()
         .map(|c| {
@@ -340,6 +365,26 @@ mod tests {
         assert!(passes(heard, expected, &[0, 3, 4, 5]));
         assert!(!passes(heard, expected, &[1]));
         assert!(!passes(heard, expected, &[2]));
+    }
+
+    #[test]
+    fn a_mixed_word_keeps_its_digits() {
+        let tokens = |text: &str| normalize_sentence_tokens(text).unwrap().join(" ");
+        assert_eq!(tokens("Pay $5 to acct7 now"), "pay five dollars to acct seven now");
+        assert_eq!(tokens("Send 8888net"), "send eight thousand eight hundred eighty eight net");
+        assert_eq!(tokens("seams-v1 don't"), "seams v one dont");
+        assert_eq!(tokens("route 07b"), "route zero seven b");
+        // Before, both read "pay five dollars to acct now", so a misheard account passed.
+        assert!(!passes("pay $5 to acct9 now", "pay five dollars to acct seven now", &[]));
+    }
+
+    #[test]
+    fn transcript_text_keeps_case_and_punctuation() {
+        assert_eq!(
+            transcript_text("  Send 8,888 NEAR\tto erik.testnet.\n"),
+            "Send 8,888 NEAR to erik.testnet."
+        );
+        assert_eq!(transcript_text(&"word ".repeat(100)).len(), MAX_HEARD_BYTES - 1);
     }
 
     /// Levenshtein distance over words, as the reference for [`forgivable_edit`].

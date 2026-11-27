@@ -27,7 +27,11 @@ export interface SaySoVerdict {
   reason: string | null;
   expires_at_ms: number;
   speaker_score_milli: number | null;
-  /** Present only on `words` refusal; `null` on `accept`. */
+  /**
+   * The normalized words heard, on a `words` refusal. For a transcript-only intent
+   * (`createIntent({ transcriptOnly: true })`), the transcript as written, on `accept`: the
+   * caller decides whether it says the request. Otherwise `null`.
+   */
   heard: string | null;
 }
 

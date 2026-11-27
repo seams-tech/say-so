@@ -1,6 +1,8 @@
 const utf8 = new TextEncoder();
 
 export const INTENT_DIGEST_DOMAIN = utf8.encode('sayso:intent:v1\0');
+/** The digest domain of a transcript-only intent (`CreateIntentOptions.transcriptOnly`). */
+export const TRANSCRIPT_INTENT_DIGEST_DOMAIN = utf8.encode('sayso:intent:transcript:v1\0');
 export const SPOKEN_TEXT_DIGEST_DOMAIN = utf8.encode('sayso:spoken:v1\0');
 export const MAX_SENTENCE_WORDS = 16;
 
@@ -24,6 +26,8 @@ export interface SaySoIntentInput {
   sentence: string;
   /** Present only when the intent has guarded words. See `CreateIntentOptions.guardedWordIndexes`. */
   guarded_word_indexes?: number[];
+  /** Present only for a transcript-only intent. See `CreateIntentOptions.transcriptOnly`. */
+  transcript_only?: true;
 }
 
 export interface CreateIntentOptions {
@@ -43,6 +47,13 @@ export interface CreateIntentOptions {
    * so a verdict for the same sentence without them does not match.
    */
   guardedWordIndexes?: readonly number[];
+  /**
+   * SaySo checks the speaker and the audio but not the words. An accepted verdict carries the
+   * transcript as written in `heard`, and you decide whether it says the request. The
+   * `intentDigest` has its own domain, so such a verdict never matches the digest of an intent
+   * whose words SaySo checks. It cannot be used with `guardedWordIndexes`.
+   */
+  transcriptOnly?: boolean;
 }
 
 export interface BuiltSaySoIntent {
@@ -99,9 +110,19 @@ export function normalizeSentenceTokens(text: string): string[] | null {
         out.push(...num);
         continue;
       }
-      const cleaned = piece.replace(/[^a-z]/g, '');
+      // Each run of letters is a word and each run of digits is a number, so "acct7" reads
+      // "acct seven" and never the same as "acct9".
+      const cleaned = piece.replace(/[^a-z0-9]/g, '');
       if (!cleaned) return null;
-      out.push(cleaned);
+      for (const run of cleaned.match(/[a-z]+|[0-9]+/g) ?? []) {
+        if (/^[0-9]/.test(run)) {
+          const digits = expandNumberToken(run);
+          if (!digits) return null;
+          out.push(...digits);
+        } else {
+          out.push(run);
+        }
+      }
     }
   }
   return out.length > 0 ? out : null;
@@ -227,12 +248,16 @@ export async function createIntent(options: CreateIntentOptions): Promise<BuiltS
   if (!ascendsInSentence) {
     throw new RangeError('guardedWordIndexes must be strictly ascending positions in the normalized sentence');
   }
+  const transcriptOnly = options.transcriptOnly === true;
+  if (transcriptOnly && guardedWordIndexes.length > 0) {
+    throw new RangeError('a transcriptOnly intent cannot have guardedWordIndexes');
+  }
   const canonicalSentence = expectedTokens.join(' ');
   const payloadSha256 = await resolvePayloadSha256(options);
 
   // An intent with no guarded words keeps the digest that it had before guarded words.
   const intentPreimage = concatBytes([
-    INTENT_DIGEST_DOMAIN,
+    transcriptOnly ? TRANSCRIPT_INTENT_DIGEST_DOMAIN : INTENT_DIGEST_DOMAIN,
     lengthPrefixed(utf8.encode(options.userId)),
     lengthPrefixed(utf8.encode(options.action)),
     payloadSha256,
@@ -253,6 +278,7 @@ export async function createIntent(options: CreateIntentOptions): Promise<BuiltS
       payload_sha256_hex: toHex(payloadSha256),
       sentence: trimmedSentence,
       ...(guardedWordIndexes.length > 0 ? { guarded_word_indexes: guardedWordIndexes } : {}),
+      ...(transcriptOnly ? { transcript_only: true as const } : {}),
     },
     canonicalSentence,
     expectedTokens,

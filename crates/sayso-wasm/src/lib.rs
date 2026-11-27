@@ -95,6 +95,7 @@ pub fn dispatch_json(input: &str) -> String {
                 "display_text": valid.display_text,
                 "expected_tokens": valid.expected_tokens,
                 "guarded_word_indexes": valid.guarded_word_indexes,
+                "transcript_only": valid.transcript_only,
                 "intent_digest_b64u": b64u(&intent_digest(&valid)),
                 "spoken_text_digest_b64u": b64u(&spoken_text_digest(&valid.canonical_sentence)),
             }),
@@ -112,7 +113,9 @@ pub fn dispatch_json(input: &str) -> String {
                     "matched_prefix_count": checked.matched_prefix_count,
                     "expected_count": valid.expected_tokens.len(),
                     "matched_exact": checked.matched_exact,
-                    "passes_now": checked.passes,
+                    // SaySo does not decide the words of a transcript-only intent, so the
+                    // stream never closes early on them.
+                    "passes_now": checked.passes && !valid.transcript_only,
                 })
             }
             Err(reason) => json!({ "ok": false, "reason": reason }),
@@ -318,6 +321,15 @@ fn evaluate_verify_inner(
         let Some(transcript_text) = transcript else {
             return Err(Reason::TranscriberUnavailable);
         };
+        if valid.transcript_only {
+            // The caller decides the words from the transcript that the verdict signs.
+            let heard = words::transcript_text(transcript_text);
+            if heard.is_empty() {
+                return Err(Reason::Words);
+            }
+            verdict.heard = Some(heard);
+            return Ok(());
+        }
         let checked =
             check_words(transcript_text, &valid.expected_tokens, &valid.guarded_word_indexes);
         if !checked.passes {
@@ -537,10 +549,71 @@ mod tests {
             call(json!({ "cmd": "prepare", "intent": outside })),
             json!({ "ok": false, "reason": "unsupported" })
         );
+        let mut both = guarded.clone();
+        both["transcript_only"] = json!(true);
+        assert_eq!(
+            call(json!({ "cmd": "prepare", "intent": both })),
+            json!({ "ok": false, "reason": "unsupported" })
+        );
         let mut malformed = plain.clone();
         malformed["guarded_word_indexes"] = json!("bob");
         let refused = call(json!({ "cmd": "prepare", "intent": malformed }));
         assert_eq!(refused["ok"], false);
         assert_eq!(refused["reason"], "unsupported");
+    }
+
+    #[test]
+    fn a_transcript_only_verdict_signs_the_transcript_and_not_a_word_decision() {
+        let enrolled = call(json!({
+            "cmd": "evaluate_enroll",
+            "embeddings_le_b64": [
+                axis_embedding_le_b64(0, 0.0),
+                axis_embedding_le_b64(0, 0.1),
+                axis_embedding_le_b64(0, 0.2),
+            ],
+            "previous_epoch": 0,
+        }));
+        let intent = json!({
+            "user_id": "near:testnet:alice.testnet",
+            "action": "seams.near.transfer",
+            "payload_sha256_hex": "42".repeat(32),
+            "sentence": "send ten near to bob dot testnet",
+            "transcript_only": true,
+        });
+        let prepared = call(json!({ "cmd": "prepare", "intent": intent }));
+        assert_eq!(prepared["transcript_only"], true);
+        // The words match, but SaySo does not decide them, so the stream does not close early.
+        let progress = call(json!({
+            "cmd": "stream_progress",
+            "intent": intent,
+            "transcript": "send ten near to bob dot testnet",
+        }));
+        assert_eq!(progress["passes_now"], false);
+
+        let verify = |transcript: &str| {
+            let evaluated = call(json!({
+                "cmd": "evaluate_verify",
+                "intent": intent,
+                "audio_digest_b64u": "A".repeat(43),
+                "gate_passes": true,
+                "audio_reused": false,
+                "template_svt1_b64": enrolled["template_svt1_b64"],
+                "embedding_le_b64": axis_embedding_le_b64(0, 0.05),
+                "transcript": transcript,
+                "now_ms": 1_760_000_000_000u64,
+            }));
+            serde_json::from_str::<Verdict>(evaluated["verdict_json"].as_str().unwrap()).unwrap()
+        };
+        // Words that differ still give an accept: the caller reads them from `heard`.
+        let accepted = verify("Send 10 NEAR to rob.testnet.");
+        assert_eq!(accepted.outcome, Outcome::Accept);
+        assert_eq!(accepted.heard.as_deref(), Some("Send 10 NEAR to rob.testnet."));
+        assert_eq!(
+            accepted.intent_digest.as_deref(),
+            prepared["intent_digest_b64u"].as_str()
+        );
+        let silent = verify("   ");
+        assert_eq!(silent.outcome, Outcome::Refuse);
+        assert_eq!(silent.reason, Some(Reason::Words));
     }
 }
