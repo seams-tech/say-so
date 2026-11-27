@@ -53,5 +53,41 @@
   ],
   "vars": {
     "SAYSO_ALLOWED_ORIGIN": "*"
+  },
+  "env": {
+    // The verifier of the Seams lane staging-testnet: its own verdict key, templates and
+    // container. It has no public route, so no browser reaches it and CORS does not apply. The
+    // lane's Gateway calls it through a service binding with `Authorization: Bearer
+    // SAYSO_API_KEY`; with no SAYSO_ENROLL_SECRET, no browser token works. Its secrets:
+    // VERDICT_SECRET_KEY_HEX and SAYSO_API_KEY.
+    "staging-testnet": {
+      "workers_dev": false,
+      "preview_urls": false,
+      "routes": [],
+      "ai": {
+        "binding": "AI"
+      },
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "ACCOUNT_VOICE",
+            "class_name": "AccountVoiceDO"
+          },
+          {
+            "name": "SPEAKER_CONTAINER",
+            "class_name": "SpeakerContainer"
+          }
+        ]
+      },
+      "containers": [
+        {
+          "class_name": "SpeakerContainer",
+          "image": "../../crates/speaker-service/Dockerfile",
+          "max_instances": 4,
+          "instance_type": "standard-1"
+        }
+      ],
+      "vars": {}
+    }
   }
 }
