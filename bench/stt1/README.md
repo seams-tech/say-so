@@ -60,3 +60,24 @@ Why SaySo refuses the correct readings:
 - SaySo drops the digits of a mixed word: "8888net" becomes "net".
 - The 5 false accepts of the variant are sound-alike contacts ("jon" heard as "John"). Only a
   contact list can refuse them.
+
+## Design A: a parser decides the words of a transcript-only verdict
+
+The same transcripts, decided by `spoken-intent` with the contacts (`txg-text rulecrate` and
+`score_whisper_crate.py` of seams-console, the scorer of the baseline):
+
+| Transcriber, `spoken-intent` rules              | Correct readings       | Transfers | Multisig | False accepts |
+| ----------------------------------------------- | ---------------------- | --------- | -------- | ------------- |
+| NEAR AI Whisper large-v3, slot rules (baseline) | 2,652 of 3,000 (88.4%) | 94.6%     | 63.7%    | 0             |
+| Workers AI turbo, slot rules (`3a284a874`)      | 2,501 of 3,000 (83.4%) | 90.5%     | 55.8%    | 0             |
+| NEAR AI Whisper large-v3, forgiving rules       | 2,733 of 3,000 (91.1%) | 98.0%     | 63.7%    | 0             |
+| Workers AI turbo, forgiving rules (`976167297`) | 2,582 of 3,000 (86.1%) | 93.9%     | 55.8%    | 0             |
+
+The commits are of seams-wallet `crates/spoken-intent` (it moved to speak-to-sign on
+2026-11-09). The grammar tool is seams-console `cc8acf90` for `3a284a874` and `679317d5` for
+`976167297`. To score again, unpack both commits as `build-corpus.sh` does, then run
+`txg-text rulecrate <corpus.json> <cases.jsonl> <heard.jsonl> <out.jsonl>`, where each
+`heard.jsonl` row is `{"caseId", "heard"}` from the transcripts, and
+`score_whisper_crate.py <out.jsonl> <report.json>`. The near misses that these rules accept
+are homophones of the true receiver (64 and 107), which the baseline does not count as false
+accepts.
