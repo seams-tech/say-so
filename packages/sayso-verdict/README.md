@@ -14,7 +14,7 @@ const { intent, intentDigest } = await createIntent({
   action: 'bank/transfer',
   payload: JSON.stringify({ to: 'acct_9182', amount_usd: 45 }),
   sentence: 'Send $45 to Bob Miller',
-  guardedWordIndexes: [1, 2, 3, 5, 6], // no forgiveness in "forty five dollars" and "bob miller"
+  guardedWordIndexes: [0, 1, 2, 3, 5, 6], // no forgiveness in "send", "forty five dollars" and "bob miller"
 });
 
 // Send `intent` to the SaySo verifier with the recording. Then check its answer:

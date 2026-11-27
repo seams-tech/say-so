@@ -86,12 +86,13 @@ const { intent, intentDigest, expectedTokens } = await createIntent({
   payload: JSON.stringify({ to: 'acct_9182', amount_usd: 45 }),
   sentence: 'Send $45 to Bob Miller',
   // expectedTokens: send forty five dollars to bob miller
-  guardedWordIndexes: [1, 2, 3, 5, 6], // "forty five dollars" and "bob miller"
+  guardedWordIndexes: [0, 1, 2, 3, 5, 6], // "send", "forty five dollars" and "bob miller"
 });
 ```
 
 - The indexes are positions in `expectedTokens`. They must be strictly ascending.
-- A changed or dropped word at a guarded position refuses with `words`. Here "send forty five dollars to rob miller" refuses, and "sent forty five dollars to bob miller" passes.
+- A changed or dropped word at a guarded position refuses with `words`. Here "send forty five dollars to rob miller" and "lend forty five dollars to bob miller" refuse. Only "to" can still be misheard.
+- Guard each word whose change can change the action: the values and also the verb. On the STT-1 sentences with perfect transcripts, guards on the values alone let 484 of 3,742 near misses pass, such as "lend" for "send" and "remove" for "add" ([bench/stt1](bench/stt1)). With every word guarded, none passed.
 - `intent_digest` covers the list. A verdict for the same sentence without the guards has a different digest, so `verifyVerdict({ intentDigest })` refuses it.
 - An intent that sayso-wasm does not accept, such as one with a list that is out of order, gets a signed `unsupported` refusal before a speech or speaker model runs.
 
