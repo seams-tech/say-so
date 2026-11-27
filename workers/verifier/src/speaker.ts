@@ -15,6 +15,16 @@ export interface SpeakerClient {
   embed(canonicalWavB64: string, expectedAudioDigestHex: string): Promise<SpeakerEmbedResult | null>;
 }
 
+interface ContainerPort {
+  fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
+}
+
+interface ContainerControl {
+  running: boolean;
+  start(opts?: { enableInternet?: boolean }): void;
+  getTcpPort(port: number): ContainerPort;
+}
+
 /**
  * Pure scale-to-zero Cloudflare Container Durable Object wrapper around `speaker-service:8080`.
  * No keepalive cron is scheduled; the container sleeps automatically after idle (`sleepAfter`).
@@ -22,14 +32,12 @@ export interface SpeakerClient {
 export class SpeakerContainer {
   static readonly defaultPort = 8080;
   static readonly sleepAfter = '3m';
+  static readonly startDeadlineMs = 8_000;
 
-  private readonly ctx: DurableObjectState & {
-    container?: {
-      running: boolean;
-      start(opts?: { enableInternet?: boolean }): void;
-      getTcpPort(port: number): { fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> };
-    };
-  };
+  private readonly ctx: DurableObjectState & { container?: ContainerControl };
+  // One start for all requests: an enrollment sends its three recordings at the same time, and
+  // `running` is true as soon as `start()` returns, before the service listens on its port.
+  private ready: Promise<void> | null = null;
 
   constructor(ctx: DurableObjectState) {
     this.ctx = ctx as typeof this.ctx;
@@ -41,26 +49,29 @@ export class SpeakerContainer {
       return Response.json({ error: 'container_binding_unavailable' }, { status: 503 });
     }
     const port = container.getTcpPort(SpeakerContainer.defaultPort);
-    if (!container.running) {
-      container.start({ enableInternet: false });
-      await this.waitForReady(port);
+    if (!container.running) this.ready = null;
+    try {
+      await (this.ready ??= this.start(container, port));
+    } catch {
+      this.ready = null;
+      return Response.json({ error: 'container_not_ready' }, { status: 503 });
     }
     return port.fetch(request);
   }
 
-  private async waitForReady(port: {
-    fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
-  }): Promise<void> {
-    const deadline = Date.now() + 8_000;
+  private async start(container: ContainerControl, port: ContainerPort): Promise<void> {
+    if (!container.running) container.start({ enableInternet: false });
+    const deadline = Date.now() + SpeakerContainer.startDeadlineMs;
     while (Date.now() < deadline) {
       try {
         const res = await port.fetch('http://container/healthz');
         if (res.ok) return;
       } catch {
-        // Container process is still loading redimnet-b1.onnx and binding port 8080.
+        // The process is still loading redimnet-b1.onnx and binding port 8080.
       }
       await new Promise((resolve) => setTimeout(resolve, 150));
     }
+    throw new Error('speaker container did not listen in time');
   }
 }
 
