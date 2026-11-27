@@ -7,6 +7,7 @@ import {
   createMockSpectralSpeakerClient,
   createMockSttProvider,
   MOCK_VERIFIER_VERSION,
+  verdictSeedHex,
 } from './mockDev.ts';
 import { createSpeakerClient, SpeakerContainer } from './speaker.ts';
 import { createWorkersAiSttProvider } from './stt.ts';
@@ -30,7 +31,6 @@ export interface Env extends AuthEnv {
   VERDICT_SECRET_KEY_HEX?: string;
 }
 
-const MOCK_DEV_SEED_HEX = '11'.repeat(32);
 const MAX_RENDER_BODY_BYTES = 16 * 1024;
 const MAX_VERIFY_BODY_BYTES = 512 * 1024;
 const MAX_ENROLL_BODY_BYTES = 1_600 * 1024;
@@ -49,11 +49,12 @@ function getWarmWasm(): SaySoCore {
 }
 
 function getWarmSigner(env: Env): Promise<VerdictSigner> {
-  const configured = env.VERDICT_SECRET_KEY_HEX?.trim() || '';
-  if (!configured && !isMockMode(env)) {
-    return Promise.reject(new Error('VERDICT_SECRET_KEY_HEX is not configured'));
+  let keyHex: string;
+  try {
+    keyHex = verdictSeedHex({ configured: env.VERDICT_SECRET_KEY_HEX ?? '', mock: isMockMode(env) });
+  } catch (error) {
+    return Promise.reject(error);
   }
-  const keyHex = configured || MOCK_DEV_SEED_HEX;
   if (cachedSignerPromise && cachedSignerKeyHex === keyHex) {
     return cachedSignerPromise;
   }

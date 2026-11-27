@@ -10,6 +10,29 @@ import type { SttProvider, SttTranscriptEvent } from './stt.ts';
 
 export const MOCK_VERIFIER_VERSION = 'sayso/0.2.0+mock';
 
+/** The public signing seed of mock mode (also in `.dev.vars.example`). No one pins its key. */
+const MOCK_VERDICT_SEED_HEX = '11'.repeat(32);
+
+/**
+ * The Ed25519 seed that signs verdicts. Production needs `VERDICT_SECRET_KEY_HEX`. Mock mode
+ * signs only with the public mock seed, because its speaker and transcriber are not real: a
+ * mock verdict signed with a real key would pass a client's check (`verifier` is only a label).
+ * So a real key with `SAYSO_DEV_MOCK=true` stops the Worker.
+ */
+export function verdictSeedHex(params: { configured: string; mock: boolean }): string {
+  const configured = params.configured.trim().toLowerCase();
+  if (!params.mock) {
+    if (!configured) throw new Error('VERDICT_SECRET_KEY_HEX is not configured');
+    return configured;
+  }
+  if (configured && configured !== MOCK_VERDICT_SEED_HEX) {
+    throw new Error(
+      'SAYSO_DEV_MOCK=true signs only with the mock seed; unset VERDICT_SECRET_KEY_HEX or SAYSO_DEV_MOCK',
+    );
+  }
+  return MOCK_VERDICT_SEED_HEX;
+}
+
 export function createMockSpectralSpeakerClient(): SpeakerClient {
   return {
     async embed(canonicalWavB64: string) {

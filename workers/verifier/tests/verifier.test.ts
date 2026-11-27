@@ -20,6 +20,7 @@ import {
   createMockSpectralSpeakerClient,
   createMockSttProvider,
   MOCK_VERIFIER_VERSION,
+  verdictSeedHex,
 } from '../src/mockDev.ts';
 import type { SpeakerClient } from '../src/speaker.ts';
 import type { SttProvider, SttTranscriptEvent } from '../src/stt.ts';
@@ -609,4 +610,18 @@ test('Guarded words refuse a misheard amount or recipient, bind the digest, and 
     assert.equal(refusalOf(await verify(malformed, 'send ten near to bob dot testnet')), 'unsupported');
   }
   assert.equal(modelCalls, callsBefore);
+});
+
+test('Mock mode signs only with the public mock seed, and production needs a real key', () => {
+  const mockSeed = '11'.repeat(32);
+  const realSeed = '7f'.repeat(32);
+  assert.equal(verdictSeedHex({ configured: realSeed, mock: false }), realSeed);
+  assert.equal(verdictSeedHex({ configured: ` ${realSeed.toUpperCase()} `, mock: false }), realSeed);
+  assert.throws(() => verdictSeedHex({ configured: '', mock: false }), /VERDICT_SECRET_KEY_HEX is not configured/);
+
+  // `.dev.vars.example` sets the mock seed, and an empty key means the mock seed too.
+  assert.equal(verdictSeedHex({ configured: mockSeed, mock: true }), mockSeed);
+  assert.equal(verdictSeedHex({ configured: '', mock: true }), mockSeed);
+  // A real key with mock mode would sign results of the mock speaker and transcriber.
+  assert.throws(() => verdictSeedHex({ configured: realSeed, mock: true }), /signs only with the mock seed/);
 });
