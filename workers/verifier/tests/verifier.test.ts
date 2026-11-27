@@ -525,3 +525,88 @@ test('Verify/stream auth fails closed, accepts verify tokens via header or ?toke
   assert.equal(closedCount, 2);
   assert.equal(errors[1]?.reason, 'unauthorized_intent');
 });
+
+test('Guarded words refuse a misheard amount or recipient, bind the digest, and a bad list costs no model call', async () => {
+  const wasm = await SaySoCore.fromBytes(wasmBytes);
+  const signer = await createVerdictSignerFromSeedHex('55'.repeat(32));
+  let heard = '';
+  let modelCalls = 0;
+  const engine = new SaySoEngine({
+    wasm,
+    signer,
+    voiceStore: createInMemoryVoiceStore(),
+    speaker: {
+      async embed() {
+        modelCalls += 1;
+        return { embeddingLeB64: makeAxisEmbeddingB64(0, 0.04), modelMs: 12 };
+      },
+    },
+    stt: {
+      async openStream() {
+        throw new Error('this test uses the batch path');
+      },
+      async transcribeBatch() {
+        modelCalls += 1;
+        return heard;
+      },
+    },
+  });
+
+  const userId = 'near:testnet:alice.testnet';
+  const enrolled = await engine.enroll(
+    userId,
+    [0.08, 0.09, 0.1].map((step) => toBase64(pcm16ToCanonicalWav(makeToneSamples(900, step)))),
+  );
+  assert.equal(enrolled.outcome, 'accept');
+
+  const transfer = {
+    userId,
+    action: 'seams.near.transfer',
+    payloadSha256: '42'.repeat(32),
+    sentence: 'send ten near to bob dot testnet',
+  };
+  const plain = await createIntent(transfer);
+  // The amount ("ten near") and the recipient ("bob dot testnet").
+  const guarded = await createIntent({ ...transfer, guardedWordIndexes: [1, 2, 4, 5, 6] });
+
+  // The Rust digest and the TypeScript digest of a guarded intent are the same.
+  const rendered = engine.render(guarded.intent);
+  assert.deepEqual(rendered.guarded_word_indexes, [1, 2, 4, 5, 6]);
+  assert.equal(rendered.intent_digest_b64u, Buffer.from(guarded.intentDigest).toString('base64url'));
+
+  // Each call sends new audio, because the verifier refuses audio that it saw before.
+  let clip = 0;
+  const verify = async (intent: typeof guarded.intent, transcript: string) => {
+    heard = transcript;
+    clip += 1;
+    const output = await engine.verifyBatch({
+      intent,
+      audioWavB64: toBase64(pcm16ToCanonicalWav(makeToneSamples(950, 0.11 + clip * 0.01))),
+    });
+    return verifyVerdict({
+      verdictJson: output.verdict_json,
+      signatureB64: output.signature_b64!,
+      publicKey: signer.publicKeyHex,
+      intentDigest: guarded.intentDigest,
+    });
+  };
+  const refusalOf = (checked: Awaited<ReturnType<typeof verify>>) =>
+    !checked.ok && checked.refusal.code === 'refused' ? checked.refusal.reason : checked.ok ? 'accepted' : checked.refusal.code;
+
+  assert.equal(refusalOf(await verify(guarded.intent, 'send ten near to rob dot testnet')), 'words');
+  assert.equal(refusalOf(await verify(guarded.intent, 'send ten near to dot testnet')), 'words');
+  assert.equal(refusalOf(await verify(guarded.intent, 'sent ten near to bob dot testnet')), 'accepted');
+  assert.equal(refusalOf(await verify(guarded.intent, 'send ten near to bob dot testnet')), 'accepted');
+
+  // Without the guards the verifier forgives "rob", but that verdict does not carry the
+  // guarded digest. So a caller cannot get a guarded verdict from an intent without guards.
+  assert.equal(refusalOf(await verify(plain.intent, 'send ten near to rob dot testnet')), 'intent_mismatch');
+
+  // A list that sayso-wasm does not accept gives a signed refusal before a model call.
+  const callsBefore = modelCalls;
+  for (const bad of [[2, 1], [7], 'bob', [1.5]]) {
+    const malformed = { ...guarded.intent, guarded_word_indexes: bad as number[] };
+    assert.equal(refusalOf(await verify(malformed, 'send ten near to bob dot testnet')), 'unsupported');
+  }
+  assert.equal(modelCalls, callsBefore);
+});

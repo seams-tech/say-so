@@ -18,6 +18,10 @@ pub struct IntentInput {
     pub action: String,
     pub payload_sha256_hex: String,
     pub sentence: String,
+    /// Positions in the normalized sentence where a misheard word is never forgiven, for
+    /// example the words of an amount and a recipient. Strictly ascending.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guarded_word_indexes: Vec<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -28,6 +32,8 @@ pub struct ValidatedIntent {
     pub expected_tokens: Vec<String>,
     pub canonical_sentence: String,
     pub display_text: String,
+    /// Strictly ascending positions in `expected_tokens`.
+    pub guarded_word_indexes: Vec<u8>,
 }
 
 pub fn validate_user_id(user_id: &str) -> Result<&str, Reason> {
@@ -70,6 +76,8 @@ pub fn validate_intent(input: &IntentInput) -> Result<ValidatedIntent, Reason> {
     if expected_tokens.is_empty() || expected_tokens.len() > MAX_SENTENCE_WORDS {
         return Err(Reason::Unsupported);
     }
+    let guarded_word_indexes =
+        validate_guarded_word_indexes(&input.guarded_word_indexes, expected_tokens.len())?;
     let canonical_sentence = expected_tokens.join(" ");
     Ok(ValidatedIntent {
         user_id,
@@ -78,19 +86,41 @@ pub fn validate_intent(input: &IntentInput) -> Result<ValidatedIntent, Reason> {
         expected_tokens,
         canonical_sentence,
         display_text,
+        guarded_word_indexes,
     })
 }
 
+/// One list has one form: strictly ascending, each index a position in the sentence.
+fn validate_guarded_word_indexes(indexes: &[u32], word_count: usize) -> Result<Vec<u8>, Reason> {
+    let ascending = indexes.windows(2).all(|pair| pair[0] < pair[1]);
+    let in_sentence = indexes
+        .last()
+        .is_none_or(|&last| usize::try_from(last).is_ok_and(|last| last < word_count));
+    if !ascending || !in_sentence {
+        return Err(Reason::Unsupported);
+    }
+    // A position is below `MAX_SENTENCE_WORDS`, so it fits in one byte.
+    indexes
+        .iter()
+        .map(|&index| u8::try_from(index).map_err(|_| Reason::Unsupported))
+        .collect()
+}
+
 /// Canonical `intent_digest`:
-/// `SHA-256("sayso:intent:v1\0" || lp(user_id) || lp(action) || payload_sha256 || lp(canonical_sentence))`
-/// where `lp(s) = u32_le(s.len()) || s.as_bytes()`.
+/// `SHA-256("sayso:intent:v1\0" || lp(user_id) || lp(action) || payload_sha256 || lp(canonical_sentence) || guards)`
+/// where `lp(b) = u32_le(b.len()) || b`. `guards` is `lp(guarded_word_indexes)` with one byte
+/// for each index, and it is empty for an intent with no guarded words. So such an intent
+/// keeps the digest that it had before guarded words, and each preimage still reads in one way.
 pub fn intent_digest(intent: &ValidatedIntent) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(INTENT_DIGEST_DOMAIN);
-    update_lp(&mut hasher, &intent.user_id);
-    update_lp(&mut hasher, &intent.action);
+    update_lp(&mut hasher, intent.user_id.as_bytes());
+    update_lp(&mut hasher, intent.action.as_bytes());
     hasher.update(intent.payload_sha256);
-    update_lp(&mut hasher, &intent.canonical_sentence);
+    update_lp(&mut hasher, intent.canonical_sentence.as_bytes());
+    if !intent.guarded_word_indexes.is_empty() {
+        update_lp(&mut hasher, &intent.guarded_word_indexes);
+    }
     hasher.finalize().into()
 }
 
@@ -102,7 +132,52 @@ pub fn spoken_text_digest(canonical_sentence: &str) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-fn update_lp(hasher: &mut Sha256, text: &str) {
-    hasher.update((text.len() as u32).to_le_bytes());
-    hasher.update(text.as_bytes());
+fn update_lp(hasher: &mut Sha256, bytes: &[u8]) {
+    hasher.update((bytes.len() as u32).to_le_bytes());
+    hasher.update(bytes);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::embedding::hex_string;
+
+    fn transfer(guarded_word_indexes: &[u32]) -> IntentInput {
+        IntentInput {
+            user_id: "near:testnet:alice.testnet".to_string(),
+            action: "seams.near.transfer".to_string(),
+            payload_sha256_hex: "42".repeat(32),
+            sentence: "send ten near to bob dot testnet".to_string(),
+            guarded_word_indexes: guarded_word_indexes.to_vec(),
+        }
+    }
+
+    fn digest_hex(guarded_word_indexes: &[u32]) -> String {
+        let valid = validate_intent(&transfer(guarded_word_indexes)).expect("valid intent");
+        hex_string(&intent_digest(&valid))
+    }
+
+    /// `packages/sayso-verdict/tests/verdict.test.ts` pins the same two values for `createIntent`.
+    #[test]
+    fn guarded_words_extend_the_digest_and_no_guards_keep_it() {
+        assert_eq!(
+            digest_hex(&[]),
+            "51bc8d22b29c0220a5cfb1a90c3ebebea5757c7f8293c0062beef13cb5968e86"
+        );
+        assert_eq!(
+            digest_hex(&[1, 2, 4, 5, 6]),
+            "a63e63c8e79f1e78101657310a9b5eedf1672fd5f55cf677db2be5accf86a583"
+        );
+        assert_ne!(digest_hex(&[1, 2, 4, 5]), digest_hex(&[1, 2, 4, 5, 6]));
+    }
+
+    #[test]
+    fn guarded_word_indexes_must_ascend_inside_the_sentence() {
+        for good in [&[][..], &[0], &[6], &[0, 1, 2, 3, 4, 5, 6]] {
+            assert!(validate_intent(&transfer(good)).is_ok(), "{good:?}");
+        }
+        for bad in [&[7][..], &[2, 1], &[1, 1], &[0, 300], &[u32::MAX]] {
+            assert_eq!(validate_intent(&transfer(bad)), Err(Reason::Unsupported), "{bad:?}");
+        }
+    }
 }

@@ -22,6 +22,8 @@ export interface SaySoIntentInput {
   action: string;
   payload_sha256_hex: string;
   sentence: string;
+  /** Present only when the intent has guarded words. See `CreateIntentOptions.guardedWordIndexes`. */
+  guarded_word_indexes?: number[];
 }
 
 export interface CreateIntentOptions {
@@ -35,6 +37,12 @@ export interface CreateIntentOptions {
   payloadSha256?: Uint8Array | string;
   /** Spoken sentence the user must say aloud (1..16 words; supports currency/numbers like `Approve payout $45`). */
   sentence: string;
+  /**
+   * Positions in `expectedTokens` where a misheard word is never forgiven, for example the
+   * words of an amount and a recipient. Strictly ascending. The `intentDigest` covers them,
+   * so a verdict for the same sentence without them does not match.
+   */
+  guardedWordIndexes?: readonly number[];
 }
 
 export interface BuiltSaySoIntent {
@@ -57,14 +65,7 @@ export interface BuiltSaySoIntent {
 export function normalizeSentenceTokens(text: string): string[] | null {
   const out: string[] = [];
   for (const raw of text.trim().split(/\s+/)) {
-    const trimmed = raw.replace(/^[,.\-!?;:"()]+|[,.\-!?;:"()]+$/g, (m, offset, str) => {
-      // Keep leading/trailing punctuation trim identical to Rust's trim_matches (excluding '-')
-      void offset;
-      void str;
-      return m;
-    });
     const edgeTrimmed = raw.replace(/^[,!?;:"().]+|[,!?;:"().]+$/g, '');
-    void trimmed;
     if (!edgeTrimmed) continue;
     const lower = edgeTrimmed.toLowerCase();
 
@@ -150,8 +151,7 @@ function pushUnderThousand(n: number, out: string[]): void {
   }
 }
 
-function lengthPrefixed(text: string): Uint8Array {
-  const bytes = utf8.encode(text);
+function lengthPrefixed(bytes: Uint8Array): Uint8Array {
   const out = new Uint8Array(4 + bytes.length);
   new DataView(out.buffer).setUint32(0, bytes.length, true);
   out.set(bytes, 4);
@@ -216,15 +216,28 @@ export async function createIntent(options: CreateIntentOptions): Promise<BuiltS
   if (!expectedTokens || expectedTokens.length === 0 || expectedTokens.length > MAX_SENTENCE_WORDS) {
     throw new RangeError(`sentence must normalize to 1..${MAX_SENTENCE_WORDS} speakable words`);
   }
+  const guardedWordIndexes = [...(options.guardedWordIndexes ?? [])];
+  const ascendsInSentence = guardedWordIndexes.every(
+    (index, at) =>
+      Number.isInteger(index) &&
+      index >= 0 &&
+      index < expectedTokens.length &&
+      (at === 0 || index > guardedWordIndexes[at - 1]),
+  );
+  if (!ascendsInSentence) {
+    throw new RangeError('guardedWordIndexes must be strictly ascending positions in the normalized sentence');
+  }
   const canonicalSentence = expectedTokens.join(' ');
   const payloadSha256 = await resolvePayloadSha256(options);
 
+  // An intent with no guarded words keeps the digest that it had before guarded words.
   const intentPreimage = concatBytes([
     INTENT_DIGEST_DOMAIN,
-    lengthPrefixed(options.userId),
-    lengthPrefixed(options.action),
+    lengthPrefixed(utf8.encode(options.userId)),
+    lengthPrefixed(utf8.encode(options.action)),
     payloadSha256,
-    lengthPrefixed(canonicalSentence),
+    lengthPrefixed(utf8.encode(canonicalSentence)),
+    ...(guardedWordIndexes.length > 0 ? [lengthPrefixed(Uint8Array.from(guardedWordIndexes))] : []),
   ]);
   const spokenPreimage = concatBytes([SPOKEN_TEXT_DIGEST_DOMAIN, utf8.encode(canonicalSentence)]);
 
@@ -239,6 +252,7 @@ export async function createIntent(options: CreateIntentOptions): Promise<BuiltS
       action: options.action,
       payload_sha256_hex: toHex(payloadSha256),
       sentence: trimmedSentence,
+      ...(guardedWordIndexes.length > 0 ? { guarded_word_indexes: guardedWordIndexes } : {}),
     },
     canonicalSentence,
     expectedTokens,

@@ -13,7 +13,7 @@ Any backend verifies the verdict with standard WebCrypto Ed25519 via `@sayso/ver
 ```mermaid
 flowchart LR
   Mic["Browser AudioWorklet<br/>16 kHz mono PCM16"]
-  Worker["Cloudflare Worker<br/>+ sayso-wasm (188 KB)"]
+  Worker["Cloudflare Worker<br/>+ sayso-wasm (190 KB)"]
   Nova["Workers AI<br/>@cf/deepgram/nova-3 WS"]
   Speaker["Cloudflare Container<br/>ReDimNet B1 AVX2 (scale-to-zero)"]
   DO["SQLite Durable Object<br/>AccountVoiceDO (SVT1 + Replay + Rate Limit)"]
@@ -74,6 +74,41 @@ const result = await verifyVerdict({
 
 if (!result.ok) throw new Error(result.refusal.code);
 ```
+
+## Guarded Words (`guardedWordIndexes`)
+
+In a sentence of 4 or more words, SaySo forgives one changed or dropped word, unless that word is a number or a negation. This rule does not protect a name: it accepts "rob" for "bob". An intent can name the word positions that get no forgiveness:
+
+```ts
+const { intent, intentDigest, expectedTokens } = await createIntent({
+  userId: 'alice@acme.com',
+  action: 'bank/transfer',
+  payload: JSON.stringify({ to: 'acct_9182', amount_usd: 45 }),
+  sentence: 'Send $45 to Bob Miller',
+  // expectedTokens: send forty five dollars to bob miller
+  guardedWordIndexes: [1, 2, 3, 5, 6], // "forty five dollars" and "bob miller"
+});
+```
+
+- The indexes are positions in `expectedTokens`. They must be strictly ascending.
+- A changed or dropped word at a guarded position refuses with `words`. Here "send forty five dollars to rob miller" refuses, and "sent forty five dollars to bob miller" passes.
+- `intent_digest` covers the list. A verdict for the same sentence without the guards has a different digest, so `verifyVerdict({ intentDigest })` refuses it.
+- An intent that sayso-wasm does not accept, such as one with a list that is out of order, gets a signed `unsupported` refusal before a speech or speaker model runs.
+
+### Intent digest
+
+```text
+intent_digest = SHA-256("sayso:intent:v1\0" || lp(user_id) || lp(action) || payload_sha256
+                        || lp(canonical_sentence) || guards)
+lp(b)         = u32_le(len(b)) || b
+guards        = lp(guarded_word_indexes), one byte for each index; empty if the intent has none
+```
+
+The `guards` block is optional and the domain stays `v1`. The other choice was a `v2` domain that always has the block. The reasons for `v1`:
+
+- An intent with no guarded words keeps its digest. Clients and verify tokens from before guarded words still match, so the Worker and its clients do not have to change at the same time.
+- Each preimage still reads in one way: the sentence has a length prefix, and the block is never an empty list.
+- It fails closed. A Worker from before guarded words refuses an intent that has `guarded_word_indexes`, because it refuses unknown intent fields.
 
 ## Quick Start
 

@@ -51,12 +51,19 @@ interface WasmAudioResult {
 }
 
 interface WasmVerdictReady {
-  ok: boolean;
+  ok: true;
   outcome: 'accept' | 'refuse';
   reason: string | null;
   verdict_json: string;
   verdict_message_b64: string;
   expires_at_ms: number;
+}
+
+/** sayso-wasm could not read the command. */
+interface WasmUnreadable {
+  ok: false;
+  reason?: string;
+  detail?: string;
 }
 
 export class SaySoEngine {
@@ -163,6 +170,13 @@ export class SaySoEngine {
   }): Promise<VerifyWireOutput> {
     const started = this.now();
     const ms: Record<string, number> = {};
+
+    // Refuse an intent that sayso-wasm does not accept before the audio is consumed and
+    // before the speaker and transcriber calls, which cost money.
+    const prepared = this.render(params.intent);
+    if (!prepared.ok) {
+      return this.signRefusal(prepared.reason ?? 'unsupported', ms, started);
+    }
 
     const audio = this.deps.wasm.call<WasmAudioResult>({
       cmd: 'audio_from_wav',
@@ -482,46 +496,53 @@ export class SaySoEngine {
     ms: Record<string, number>;
     started: number;
   }): Promise<VerifyWireOutput> {
-    const ready = this.deps.wasm.call<WasmVerdictReady>({
-      cmd: 'evaluate_verify',
-      intent: params.intent,
-      audio_digest_b64u: params.audio.audio_digest_b64u,
-      gate_passes: Boolean(params.audio.gate_passes),
-      audio_reused: params.consumed.audioReused,
-      template_svt1_b64: params.consumed.template?.templateSvt1B64 ?? null,
-      embedding_le_b64: params.speakerEmbeddingB64,
-      transcript: params.transcript,
-      now_ms: this.now(),
-      verifier_version: this.verifierVersion,
-    });
-
-    const signStart = this.now();
-    const signatureB64 = await this.deps.signer.signMessageB64(ready.verdict_message_b64);
-    params.ms.sign = this.now() - signStart;
-    params.ms.total = this.now() - params.started;
-
-    return {
-      kind: 'sayso_verify_output_v1',
-      verdict_json: ready.verdict_json,
-      signature_b64: signatureB64,
-      public_key_hex: this.deps.signer.publicKeyHex,
-      ms: params.ms,
-      detail: null,
-    };
+    return this.signVerdict(
+      {
+        cmd: 'evaluate_verify',
+        intent: params.intent,
+        audio_digest_b64u: params.audio.audio_digest_b64u,
+        gate_passes: Boolean(params.audio.gate_passes),
+        audio_reused: params.consumed.audioReused,
+        template_svt1_b64: params.consumed.template?.templateSvt1B64 ?? null,
+        embedding_le_b64: params.speakerEmbeddingB64,
+        transcript: params.transcript,
+        now_ms: this.now(),
+        verifier_version: this.verifierVersion,
+      },
+      params.ms,
+      params.started,
+    );
   }
 
-  private async signRefusal(
+  private signRefusal(
     reason: string,
     ms: Record<string, number>,
     started: number,
   ): Promise<VerifyWireOutput> {
-    const ready = this.deps.wasm.call<WasmVerdictReady>({
-      cmd: 'refuse_verdict',
-      reason,
-      now_ms: this.now(),
-      verifier_version: this.verifierVersion,
-    });
+    return this.signVerdict(
+      { cmd: 'refuse_verdict', reason, now_ms: this.now(), verifier_version: this.verifierVersion },
+      ms,
+      started,
+    );
+  }
+
+  /**
+   * Signs the verdict that sayso-wasm builds for `command`. Both verify paths check the
+   * caller's intent with `prepare` first, so a command that sayso-wasm cannot read is a fault
+   * of the Worker.
+   */
+  private async signVerdict(
+    command: Record<string, unknown>,
+    ms: Record<string, number>,
+    started: number,
+  ): Promise<VerifyWireOutput> {
+    const ready = this.deps.wasm.call<WasmVerdictReady | WasmUnreadable>(command);
+    if (!ready.ok) {
+      throw new Error(`sayso-wasm could not read '${String(command.cmd)}': ${ready.detail ?? ready.reason}`);
+    }
+    const signStart = this.now();
     const signatureB64 = await this.deps.signer.signMessageB64(ready.verdict_message_b64);
+    ms.sign = this.now() - signStart;
     ms.total = this.now() - started;
     return {
       kind: 'sayso_verify_output_v1',

@@ -247,3 +247,29 @@ test('HMAC verify tokens bind userId, optional intentDigest, and stay domain-sep
   });
   assert.deepEqual(crossVerify, { ok: false, code: 'bad_signature' });
 });
+
+test('guarded words extend the intent digest, and an intent with none keeps its digest', async () => {
+  const transfer = {
+    userId: 'near:testnet:alice.testnet',
+    action: 'seams.near.transfer',
+    payloadSha256: '42'.repeat(32),
+    sentence: 'send ten near to bob dot testnet',
+  };
+  const toHex = (bytes: Uint8Array) => Buffer.from(bytes).toString('hex');
+
+  // `crates/sayso-wasm/src/intent.rs` pins the same two values for `intent_digest`.
+  const plain = await createIntent(transfer);
+  assert.equal(toHex(plain.intentDigest), '51bc8d22b29c0220a5cfb1a90c3ebebea5757c7f8293c0062beef13cb5968e86');
+  assert.equal('guarded_word_indexes' in plain.intent, false);
+  assert.deepEqual(await createIntent({ ...transfer, guardedWordIndexes: [] }), plain);
+
+  // The amount ("ten near") and the recipient ("bob dot testnet").
+  const guarded = await createIntent({ ...transfer, guardedWordIndexes: [1, 2, 4, 5, 6] });
+  assert.equal(toHex(guarded.intentDigest), 'a63e63c8e79f1e78101657310a9b5eedf1672fd5f55cf677db2be5accf86a583');
+  assert.deepEqual(guarded.intent.guarded_word_indexes, [1, 2, 4, 5, 6]);
+  assert.deepEqual(guarded.spokenTextDigest, plain.spokenTextDigest);
+
+  for (const bad of [[7], [2, 1], [1, 1], [-1], [1.5], [Number.NaN]]) {
+    await assert.rejects(createIntent({ ...transfer, guardedWordIndexes: bad }), RangeError, JSON.stringify(bad));
+  }
+});

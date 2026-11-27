@@ -94,6 +94,7 @@ pub fn dispatch_json(input: &str) -> String {
                 "sentence": valid.canonical_sentence,
                 "display_text": valid.display_text,
                 "expected_tokens": valid.expected_tokens,
+                "guarded_word_indexes": valid.guarded_word_indexes,
                 "intent_digest_b64u": b64u(&intent_digest(&valid)),
                 "spoken_text_digest_b64u": b64u(&spoken_text_digest(&valid.canonical_sentence)),
             }),
@@ -102,7 +103,8 @@ pub fn dispatch_json(input: &str) -> String {
 
         Command::StreamProgress { intent, transcript } => match validate_intent(&intent) {
             Ok(valid) => {
-                let checked = check_words(&transcript, &valid.expected_tokens);
+                let checked =
+                    check_words(&transcript, &valid.expected_tokens, &valid.guarded_word_indexes);
                 json!({
                     "ok": true,
                     "heard": checked.heard,
@@ -316,7 +318,8 @@ fn evaluate_verify_inner(
         let Some(transcript_text) = transcript else {
             return Err(Reason::TranscriberUnavailable);
         };
-        let checked = check_words(transcript_text, &valid.expected_tokens);
+        let checked =
+            check_words(transcript_text, &valid.expected_tokens, &valid.guarded_word_indexes);
         if !checked.passes {
             if !checked.heard.is_empty() {
                 verdict.heard = Some(checked.heard);
@@ -493,5 +496,51 @@ mod tests {
         assert_eq!(parsed.verifier, "sayso/0.2.0");
         assert_eq!(parsed.user_id.as_deref(), Some("alice@acme.com"));
         assert_eq!(parsed.heard, None);
+    }
+
+    fn call(command: Value) -> Value {
+        serde_json::from_str(&dispatch_json(&command.to_string())).unwrap()
+    }
+
+    #[test]
+    fn guarded_word_indexes_reach_prepare_and_the_word_check() {
+        let plain = json!({
+            "user_id": "near:testnet:alice.testnet",
+            "action": "seams.near.transfer",
+            "payload_sha256_hex": "42".repeat(32),
+            "sentence": "send ten near to bob dot testnet",
+        });
+        let mut guarded = plain.clone();
+        guarded["guarded_word_indexes"] = json!([1, 2, 4, 5, 6]);
+
+        let prepared = call(json!({ "cmd": "prepare", "intent": guarded }));
+        assert_eq!(prepared["ok"], true);
+        assert_eq!(prepared["guarded_word_indexes"], json!([1, 2, 4, 5, 6]));
+        let prepared_plain = call(json!({ "cmd": "prepare", "intent": plain }));
+        assert_eq!(prepared_plain["guarded_word_indexes"], json!([]));
+        assert_ne!(prepared["intent_digest_b64u"], prepared_plain["intent_digest_b64u"]);
+
+        let passes_now = |intent: &Value, transcript: &str| {
+            call(json!({ "cmd": "stream_progress", "intent": intent, "transcript": transcript }))
+                ["passes_now"]
+                .clone()
+        };
+        assert_eq!(passes_now(&plain, "send ten near to rob dot testnet"), true);
+        assert_eq!(passes_now(&guarded, "send ten near to rob dot testnet"), false);
+        assert_eq!(passes_now(&guarded, "sent ten near to bob dot testnet"), true);
+
+        // Indexes outside the sentence are a refusal with a reason. A value that is not a
+        // list of numbers does not parse, and the Worker signs the refusal for it.
+        let mut outside = plain.clone();
+        outside["guarded_word_indexes"] = json!([7]);
+        assert_eq!(
+            call(json!({ "cmd": "prepare", "intent": outside })),
+            json!({ "ok": false, "reason": "unsupported" })
+        );
+        let mut malformed = plain.clone();
+        malformed["guarded_word_indexes"] = json!("bob");
+        let refused = call(json!({ "cmd": "prepare", "intent": malformed }));
+        assert_eq!(refused["ok"], false);
+        assert_eq!(refused["reason"], "unsupported");
     }
 }

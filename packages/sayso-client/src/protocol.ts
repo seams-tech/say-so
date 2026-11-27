@@ -25,6 +25,8 @@ export interface RenderWireOutput {
   sentence?: string;
   display_text?: string;
   expected_tokens?: string[];
+  /** Positions in `expected_tokens` where a misheard word is never forgiven. */
+  guarded_word_indexes?: number[];
   intent_digest_b64u?: string;
   spoken_text_digest_b64u?: string;
   reason?: string;
