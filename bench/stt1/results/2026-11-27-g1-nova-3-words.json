@@ -1,0 +1,242 @@
+{
+  "transcripts": "/Users/pta/Dev/purin-labs/say-so/target/g1/nova-3-words.jsonl",
+  "requests": 250,
+  "cases": 6742,
+  "requestsOver16Words": 28,
+  "requestsOver16WordsByKind": {
+    "transfer": 20,
+    "ms_transfer": 8
+  },
+  "policies": {
+    "values": {
+      "correct": {
+        "cases": 3000,
+        "accepted": 1119,
+        "intentRefused": 336,
+        "noTranscript": 0
+      },
+      "correct/transfer": {
+        "cases": 2400,
+        "accepted": 889,
+        "intentRefused": 240,
+        "noTranscript": 0
+      },
+      "near_miss": {
+        "cases": 3742,
+        "accepted": 153,
+        "intentRefused": 390,
+        "noTranscript": 57
+      },
+      "near_miss/one_digit": {
+        "cases": 418,
+        "accepted": 0,
+        "intentRefused": 56,
+        "noTranscript": 0
+      },
+      "near_miss/ten_times": {
+        "cases": 348,
+        "accepted": 0,
+        "intentRefused": 8,
+        "noTranscript": 0
+      },
+      "near_miss/moved_decimal": {
+        "cases": 356,
+        "accepted": 0,
+        "intentRefused": 14,
+        "noTranscript": 0
+      },
+      "near_miss/other_contact": {
+        "cases": 420,
+        "accepted": 9,
+        "intentRefused": 56,
+        "noTranscript": 0
+      },
+      "near_miss/changed_verb": {
+        "cases": 500,
+        "accepted": 131,
+        "intentRefused": 56,
+        "noTranscript": 1
+      },
+      "near_miss/negation": {
+        "cases": 500,
+        "accepted": 0,
+        "intentRefused": 56,
+        "noTranscript": 1
+      },
+      "near_miss/added_clause": {
+        "cases": 500,
+        "accepted": 0,
+        "intentRefused": 56,
+        "noTranscript": 55
+      },
+      "near_miss/missing_amount": {
+        "cases": 420,
+        "accepted": 0,
+        "intentRefused": 56,
+        "noTranscript": 0
+      },
+      "correct/multisig": {
+        "cases": 600,
+        "accepted": 230,
+        "intentRefused": 96,
+        "noTranscript": 0
+      },
+      "near_miss/proposal_id": {
+        "cases": 100,
+        "accepted": 0,
+        "intentRefused": 16,
+        "noTranscript": 0
+      },
+      "near_miss/swapped_challenge": {
+        "cases": 100,
+        "accepted": 0,
+        "intentRefused": 16,
+        "noTranscript": 0
+      },
+      "near_miss/add_remove_swapped": {
+        "cases": 40,
+        "accepted": 13,
+        "intentRefused": 0,
+        "noTranscript": 0
+      },
+      "near_miss/threshold_changed": {
+        "cases": 20,
+        "accepted": 0,
+        "intentRefused": 0,
+        "noTranscript": 0
+      },
+      "near_miss/version_digit": {
+        "cases": 20,
+        "accepted": 0,
+        "intentRefused": 0,
+        "noTranscript": 0
+      }
+    },
+    "all": {
+      "correct": {
+        "cases": 3000,
+        "accepted": 1010,
+        "intentRefused": 336,
+        "noTranscript": 0
+      },
+      "correct/transfer": {
+        "cases": 2400,
+        "accepted": 859,
+        "intentRefused": 240,
+        "noTranscript": 0
+      },
+      "near_miss": {
+        "cases": 3742,
+        "accepted": 8,
+        "intentRefused": 390,
+        "noTranscript": 57
+      },
+      "near_miss/one_digit": {
+        "cases": 418,
+        "accepted": 0,
+        "intentRefused": 56,
+        "noTranscript": 0
+      },
+      "near_miss/ten_times": {
+        "cases": 348,
+        "accepted": 0,
+        "intentRefused": 8,
+        "noTranscript": 0
+      },
+      "near_miss/moved_decimal": {
+        "cases": 356,
+        "accepted": 0,
+        "intentRefused": 14,
+        "noTranscript": 0
+      },
+      "near_miss/other_contact": {
+        "cases": 420,
+        "accepted": 8,
+        "intentRefused": 56,
+        "noTranscript": 0
+      },
+      "near_miss/changed_verb": {
+        "cases": 500,
+        "accepted": 0,
+        "intentRefused": 56,
+        "noTranscript": 1
+      },
+      "near_miss/negation": {
+        "cases": 500,
+        "accepted": 0,
+        "intentRefused": 56,
+        "noTranscript": 1
+      },
+      "near_miss/added_clause": {
+        "cases": 500,
+        "accepted": 0,
+        "intentRefused": 56,
+        "noTranscript": 55
+      },
+      "near_miss/missing_amount": {
+        "cases": 420,
+        "accepted": 0,
+        "intentRefused": 56,
+        "noTranscript": 0
+      },
+      "correct/multisig": {
+        "cases": 600,
+        "accepted": 151,
+        "intentRefused": 96,
+        "noTranscript": 0
+      },
+      "near_miss/proposal_id": {
+        "cases": 100,
+        "accepted": 0,
+        "intentRefused": 16,
+        "noTranscript": 0
+      },
+      "near_miss/swapped_challenge": {
+        "cases": 100,
+        "accepted": 0,
+        "intentRefused": 16,
+        "noTranscript": 0
+      },
+      "near_miss/add_remove_swapped": {
+        "cases": 40,
+        "accepted": 0,
+        "intentRefused": 0,
+        "noTranscript": 0
+      },
+      "near_miss/threshold_changed": {
+        "cases": 20,
+        "accepted": 0,
+        "intentRefused": 0,
+        "noTranscript": 0
+      },
+      "near_miss/version_digit": {
+        "cases": 20,
+        "accepted": 0,
+        "intentRefused": 0,
+        "noTranscript": 0
+      }
+    }
+  },
+  "falseAcceptExamples": {
+    "values/changed_verb": [
+      "want \"send sixty eight point three near to max nine nine dot testnet\" | heard \"lend sixty eight point three near to max nine nine dot testnet\"",
+      "want \"send sixty eight point three near to max nine nine dot testnet\" | heard \"lin sixty eight point three near to max nine nine dot testnet\"",
+      "want \"send three thousand eight hundred eight point four five near to uma dot testnet\" | heard \"len three thousand eight hundred eight point four five near to uma dot testnet\""
+    ],
+    "values/other_contact": [
+      "want \"send forty four thousand forty eight point one seven near to john dot testnet\" | heard \"sent forty four thousand forty eight point one seven near to john dot testnet\"",
+      "want \"send forty four thousand forty eight point one seven near to john dot testnet\" | heard \"send forty four thousand forty eight point one seven near to john dot testnet\"",
+      "want \"send three point one near to sarah dot testnet\" | heard \"send three point one near to sarah dot testnet\""
+    ],
+    "values/add_remove_swapped": [
+      "want \"approve proposal thirty remove member ruby dot near beacon piano\" | heard \"approve proposal thirty ad member ruby dot near beacon piano\"",
+      "want \"approve proposal thirty remove member ruby dot near beacon piano\" | heard \"approve proposal thirty ad member ruby dot near beacon piano\"",
+      "want \"approve proposal one hundred ninety six add member hannah dot testnet basket needle\" | heard \"approve proposal one hundred ninety six remove member hannah dot testnet basket needle\""
+    ],
+    "all/other_contact": [
+      "want \"send forty four thousand forty eight point one seven near to john dot testnet\" | heard \"send forty four thousand forty eight point one seven near to john dot testnet\"",
+      "want \"send three point one near to sarah dot testnet\" | heard \"send three point one near to sarah dot testnet\"",
+      "want \"send two hundred eleven thousand six hundred sixty two near to eric dot testnet\" | heard \"send two hundred eleven thousand six hundred sixty two near to eric dot testnet\""
+    ]
+  }
+}

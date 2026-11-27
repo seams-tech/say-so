@@ -10,7 +10,7 @@
 # with the crates of the grammar tool in its cache, and the two clones with those commits.
 set -eu
 work=$1
-console=${2:-$HOME/Dev/purin-labs/seams-console}
+console=${2:-$HOME/Dev/rust/seams-console}
 wallet=${3:-$HOME/Dev/rust/seams-wallet}
 
 mkdir -p "$work/src/seams-console" "$work/src/seams-wallet"

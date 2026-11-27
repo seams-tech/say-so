@@ -1,0 +1,707 @@
+{
+  "gate": "STT-1",
+  "model": "whisper-large-v3 (NEAR AI Cloud)",
+  "date": "2026-11-07",
+  "decisions": "txg-text rulecrate (transaction-grammar/grammar/src/rulew.rs)",
+  "ruleDefinitions": {
+    "ruleCrate": "spoken_intent::normalize_punctuated with the valid vault (transfers) or no contacts (multisig approvals), then parse_transfer and render, or word equality",
+    "ruleW2": "as in stt1-transaction-grammar-whisper-nearai-w2-2026-11-07",
+    "ruleA": "normalize(transcript) equals the expected spoken text, word for word"
+  },
+  "expectedText": "the corpus spoken text; set verifier version cases speak five check digits",
+  "cases": 6742,
+  "errors": 113,
+  "decisionsDifferFromRuleW2": 79,
+  "rules": {
+    "ruleCrate": {
+      "correctAccepted": 1366,
+      "correctCases": 3000,
+      "correctPercent": 45.53,
+      "correctByRequestKind": {
+        "multisig": {
+          "accepted": 206,
+          "cases": 588,
+          "percent": 35.03
+        },
+        "transfer": {
+          "accepted": 1160,
+          "cases": 2400,
+          "percent": 48.33
+        }
+      },
+      "correctByKind": {
+        "ms_add_member": {
+          "accepted": 13,
+          "cases": 120,
+          "percent": 10.83
+        },
+        "ms_remove_member": {
+          "accepted": 46,
+          "cases": 120,
+          "percent": 38.33
+        },
+        "ms_set_threshold": {
+          "accepted": 69,
+          "cases": 120,
+          "percent": 57.5
+        },
+        "ms_set_verifier_version": {
+          "accepted": 64,
+          "cases": 120,
+          "percent": 53.33
+        },
+        "ms_transfer": {
+          "accepted": 14,
+          "cases": 108,
+          "percent": 12.96
+        },
+        "transfer": {
+          "accepted": 1160,
+          "cases": 2400,
+          "percent": 48.33
+        }
+      },
+      "correctByVoice": {
+        "Daniel": {
+          "accepted": 156,
+          "cases": 499,
+          "percent": 31.26
+        },
+        "Karen": {
+          "accepted": 286,
+          "cases": 499,
+          "percent": 57.31
+        },
+        "Moira": {
+          "accepted": 245,
+          "cases": 498,
+          "percent": 49.2
+        },
+        "Rishi": {
+          "accepted": 262,
+          "cases": 498,
+          "percent": 52.61
+        },
+        "Samantha": {
+          "accepted": 211,
+          "cases": 499,
+          "percent": 42.28
+        },
+        "Tessa": {
+          "accepted": 206,
+          "cases": 495,
+          "percent": 41.62
+        }
+      },
+      "correctByRate": {
+        "160": {
+          "accepted": 787,
+          "cases": 1488,
+          "percent": 52.89
+        },
+        "210": {
+          "accepted": 579,
+          "cases": 1500,
+          "percent": 38.6
+        }
+      },
+      "nearMissCases": 3742,
+      "nearMissesAccepted": 38,
+      "homophoneOfTrueReceiver": 32,
+      "falseAccepts": 6,
+      "falseAcceptsByKind": {
+        "add_remove_swapped": {
+          "falseAccepts": 0,
+          "cases": 40
+        },
+        "added_clause": {
+          "falseAccepts": 0,
+          "cases": 417
+        },
+        "changed_verb": {
+          "falseAccepts": 0,
+          "cases": 497
+        },
+        "missing_amount": {
+          "falseAccepts": 0,
+          "cases": 420
+        },
+        "moved_decimal": {
+          "falseAccepts": 6,
+          "cases": 356
+        },
+        "negation": {
+          "falseAccepts": 0,
+          "cases": 494
+        },
+        "one_digit": {
+          "falseAccepts": 0,
+          "cases": 416
+        },
+        "other_contact": {
+          "falseAccepts": 0,
+          "cases": 417
+        },
+        "proposal_id": {
+          "falseAccepts": 0,
+          "cases": 97
+        },
+        "swapped_challenge": {
+          "falseAccepts": 0,
+          "cases": 99
+        },
+        "ten_times": {
+          "falseAccepts": 0,
+          "cases": 348
+        },
+        "threshold_changed": {
+          "falseAccepts": 0,
+          "cases": 20
+        },
+        "version_digit": {
+          "falseAccepts": 0,
+          "cases": 20
+        }
+      },
+      "falseAcceptCases": [
+        {
+          "caseId": "t046-near_miss-moved_decimal-Tessa-210",
+          "audioText": "send two hundred twenty two point two near to savings dash one dot testnet",
+          "heard": "Send 2222 near to savings dash 1 dot test net"
+        },
+        {
+          "caseId": "t050-near_miss-moved_decimal-Rishi-210",
+          "audioText": "send nine hundred sixty two point one near to alicia dot testnet",
+          "heard": "Send 9621 near to alicia dot test net"
+        },
+        {
+          "caseId": "t059-near_miss-moved_decimal-Karen-210",
+          "audioText": "send seventy three thousand three hundred eighteen point six near to rent dash two zero two six dot testnet",
+          "heard": "Send 733186 near to rent dash 2 0 2 6 dot test net."
+        },
+        {
+          "caseId": "t080-near_miss-moved_decimal-Moira-210",
+          "audioText": "send fifty eight thousand two hundred thirteen point three near to ops dash four two dot testnet",
+          "heard": "Send 582133 near to ops dash 4 2 dot test net."
+        },
+        {
+          "caseId": "t133-near_miss-moved_decimal-Rishi-160",
+          "audioText": "send six hundred sixty six point six near to anna dot testnet",
+          "heard": "Send 6666 near to annna.test net."
+        },
+        {
+          "caseId": "t144-near_miss-moved_decimal-Samantha-210",
+          "audioText": "send two hundred ninety three point nine near to leo dot testnet",
+          "heard": "Send 2939 near to leo.test net."
+        }
+      ],
+      "pass": false
+    },
+    "ruleW2": {
+      "correctAccepted": 1289,
+      "correctCases": 3000,
+      "correctPercent": 42.97,
+      "correctByRequestKind": {
+        "multisig": {
+          "accepted": 205,
+          "cases": 588,
+          "percent": 34.86
+        },
+        "transfer": {
+          "accepted": 1084,
+          "cases": 2400,
+          "percent": 45.17
+        }
+      },
+      "correctByKind": {
+        "ms_add_member": {
+          "accepted": 13,
+          "cases": 120,
+          "percent": 10.83
+        },
+        "ms_remove_member": {
+          "accepted": 46,
+          "cases": 120,
+          "percent": 38.33
+        },
+        "ms_set_threshold": {
+          "accepted": 69,
+          "cases": 120,
+          "percent": 57.5
+        },
+        "ms_set_verifier_version": {
+          "accepted": 63,
+          "cases": 120,
+          "percent": 52.5
+        },
+        "ms_transfer": {
+          "accepted": 14,
+          "cases": 108,
+          "percent": 12.96
+        },
+        "transfer": {
+          "accepted": 1084,
+          "cases": 2400,
+          "percent": 45.17
+        }
+      },
+      "correctByVoice": {
+        "Daniel": {
+          "accepted": 155,
+          "cases": 499,
+          "percent": 31.06
+        },
+        "Karen": {
+          "accepted": 253,
+          "cases": 499,
+          "percent": 50.7
+        },
+        "Moira": {
+          "accepted": 220,
+          "cases": 498,
+          "percent": 44.18
+        },
+        "Rishi": {
+          "accepted": 256,
+          "cases": 498,
+          "percent": 51.41
+        },
+        "Samantha": {
+          "accepted": 203,
+          "cases": 499,
+          "percent": 40.68
+        },
+        "Tessa": {
+          "accepted": 202,
+          "cases": 495,
+          "percent": 40.81
+        }
+      },
+      "correctByRate": {
+        "160": {
+          "accepted": 717,
+          "cases": 1488,
+          "percent": 48.19
+        },
+        "210": {
+          "accepted": 572,
+          "cases": 1500,
+          "percent": 38.13
+        }
+      },
+      "nearMissCases": 3742,
+      "nearMissesAccepted": 36,
+      "homophoneOfTrueReceiver": 30,
+      "falseAccepts": 6,
+      "falseAcceptsByKind": {
+        "add_remove_swapped": {
+          "falseAccepts": 0,
+          "cases": 40
+        },
+        "added_clause": {
+          "falseAccepts": 0,
+          "cases": 417
+        },
+        "changed_verb": {
+          "falseAccepts": 0,
+          "cases": 497
+        },
+        "missing_amount": {
+          "falseAccepts": 0,
+          "cases": 420
+        },
+        "moved_decimal": {
+          "falseAccepts": 6,
+          "cases": 356
+        },
+        "negation": {
+          "falseAccepts": 0,
+          "cases": 494
+        },
+        "one_digit": {
+          "falseAccepts": 0,
+          "cases": 416
+        },
+        "other_contact": {
+          "falseAccepts": 0,
+          "cases": 417
+        },
+        "proposal_id": {
+          "falseAccepts": 0,
+          "cases": 97
+        },
+        "swapped_challenge": {
+          "falseAccepts": 0,
+          "cases": 99
+        },
+        "ten_times": {
+          "falseAccepts": 0,
+          "cases": 348
+        },
+        "threshold_changed": {
+          "falseAccepts": 0,
+          "cases": 20
+        },
+        "version_digit": {
+          "falseAccepts": 0,
+          "cases": 20
+        }
+      },
+      "falseAcceptCases": [
+        {
+          "caseId": "t046-near_miss-moved_decimal-Tessa-210",
+          "audioText": "send two hundred twenty two point two near to savings dash one dot testnet",
+          "heard": "Send 2222 near to savings dash 1 dot test net"
+        },
+        {
+          "caseId": "t050-near_miss-moved_decimal-Rishi-210",
+          "audioText": "send nine hundred sixty two point one near to alicia dot testnet",
+          "heard": "Send 9621 near to alicia dot test net"
+        },
+        {
+          "caseId": "t059-near_miss-moved_decimal-Karen-210",
+          "audioText": "send seventy three thousand three hundred eighteen point six near to rent dash two zero two six dot testnet",
+          "heard": "Send 733186 near to rent dash 2 0 2 6 dot test net."
+        },
+        {
+          "caseId": "t080-near_miss-moved_decimal-Moira-210",
+          "audioText": "send fifty eight thousand two hundred thirteen point three near to ops dash four two dot testnet",
+          "heard": "Send 582133 near to ops dash 4 2 dot test net."
+        },
+        {
+          "caseId": "t133-near_miss-moved_decimal-Rishi-160",
+          "audioText": "send six hundred sixty six point six near to anna dot testnet",
+          "heard": "Send 6666 near to annna.test net."
+        },
+        {
+          "caseId": "t144-near_miss-moved_decimal-Samantha-210",
+          "audioText": "send two hundred ninety three point nine near to leo dot testnet",
+          "heard": "Send 2939 near to leo.test net."
+        }
+      ],
+      "pass": false
+    },
+    "ruleA": {
+      "correctAccepted": 860,
+      "correctCases": 3000,
+      "correctPercent": 28.67,
+      "correctByRequestKind": {
+        "multisig": {
+          "accepted": 155,
+          "cases": 588,
+          "percent": 26.36
+        },
+        "transfer": {
+          "accepted": 705,
+          "cases": 2400,
+          "percent": 29.38
+        }
+      },
+      "correctByKind": {
+        "ms_add_member": {
+          "accepted": 9,
+          "cases": 120,
+          "percent": 7.5
+        },
+        "ms_remove_member": {
+          "accepted": 37,
+          "cases": 120,
+          "percent": 30.83
+        },
+        "ms_set_threshold": {
+          "accepted": 65,
+          "cases": 120,
+          "percent": 54.17
+        },
+        "ms_set_verifier_version": {
+          "accepted": 32,
+          "cases": 120,
+          "percent": 26.67
+        },
+        "ms_transfer": {
+          "accepted": 12,
+          "cases": 108,
+          "percent": 11.11
+        },
+        "transfer": {
+          "accepted": 705,
+          "cases": 2400,
+          "percent": 29.38
+        }
+      },
+      "correctByVoice": {
+        "Daniel": {
+          "accepted": 61,
+          "cases": 499,
+          "percent": 12.22
+        },
+        "Karen": {
+          "accepted": 193,
+          "cases": 499,
+          "percent": 38.68
+        },
+        "Moira": {
+          "accepted": 167,
+          "cases": 498,
+          "percent": 33.53
+        },
+        "Rishi": {
+          "accepted": 137,
+          "cases": 498,
+          "percent": 27.51
+        },
+        "Samantha": {
+          "accepted": 144,
+          "cases": 499,
+          "percent": 28.86
+        },
+        "Tessa": {
+          "accepted": 158,
+          "cases": 495,
+          "percent": 31.92
+        }
+      },
+      "correctByRate": {
+        "160": {
+          "accepted": 499,
+          "cases": 1488,
+          "percent": 33.53
+        },
+        "210": {
+          "accepted": 361,
+          "cases": 1500,
+          "percent": 24.07
+        }
+      },
+      "nearMissCases": 3742,
+      "nearMissesAccepted": 9,
+      "homophoneOfTrueReceiver": 9,
+      "falseAccepts": 0,
+      "falseAcceptsByKind": {
+        "add_remove_swapped": {
+          "falseAccepts": 0,
+          "cases": 40
+        },
+        "added_clause": {
+          "falseAccepts": 0,
+          "cases": 417
+        },
+        "changed_verb": {
+          "falseAccepts": 0,
+          "cases": 497
+        },
+        "missing_amount": {
+          "falseAccepts": 0,
+          "cases": 420
+        },
+        "moved_decimal": {
+          "falseAccepts": 0,
+          "cases": 356
+        },
+        "negation": {
+          "falseAccepts": 0,
+          "cases": 494
+        },
+        "one_digit": {
+          "falseAccepts": 0,
+          "cases": 416
+        },
+        "other_contact": {
+          "falseAccepts": 0,
+          "cases": 417
+        },
+        "proposal_id": {
+          "falseAccepts": 0,
+          "cases": 97
+        },
+        "swapped_challenge": {
+          "falseAccepts": 0,
+          "cases": 99
+        },
+        "ten_times": {
+          "falseAccepts": 0,
+          "cases": 348
+        },
+        "threshold_changed": {
+          "falseAccepts": 0,
+          "cases": 20
+        },
+        "version_digit": {
+          "falseAccepts": 0,
+          "cases": 20
+        }
+      },
+      "falseAcceptCases": [],
+      "pass": false
+    }
+  },
+  "ruleCrateRefusedCorrectByStage": {
+    "recipient_no_key_match": 663,
+    "parse": 507,
+    "words": 371,
+    "render_differs": 70,
+    "normalize": 11
+  },
+  "ruleCrateTopRefusalReasons": [
+    {
+      "reason": "parse Amount: '' -> 'zero'",
+      "cases": 90,
+      "examples": [
+        "Send 8 0.8 8 near to Liza dot test note.",
+        "Send 8 0.88 near to liza dot testnet"
+      ]
+    },
+    {
+      "reason": "words differ: 'hundred' -> ''",
+      "cases": 82,
+      "examples": [
+        "Approve proposal 5 50 set verifier version 50,239 garden needle.",
+        "Approve proposal 5 50 set verifier version 50,239 Garden Needle."
+      ]
+    },
+    {
+      "reason": "parse NotTransfer: 'send' -> 'sent'",
+      "cases": 62,
+      "examples": [
+        "Sent 143123 near to oliver dot Testnet.",
+        "Sent 143123 near to oliver dot Testnet."
+      ]
+    },
+    {
+      "reason": "parse Amount: 'two' -> 'twenty'",
+      "cases": 44,
+      "examples": [
+        "Send 7 412 point 29 near to Anna dot testnet.",
+        "Send 7400 and 12 point 29 near to Anna dot testnet."
+      ]
+    },
+    {
+      "reason": "parse Amount: 'thousand' -> ''",
+      "cases": 38,
+      "examples": [
+        "Send 9 57 near to grace dot near",
+        "Send 9 57 near to grace dot near"
+      ]
+    },
+    {
+      "reason": "render differs: 'zero' -> ''",
+      "cases": 38,
+      "examples": [
+        "Send 500 and 44400 and 91 point 06 near to eric. Testnet",
+        "Send 544491 point 06 near to eric dot testnet."
+      ]
+    },
+    {
+      "reason": "words differ: 'add' -> 'ad'",
+      "cases": 38,
+      "examples": [
+        "Approve proposal 13 ad member Alice 2 dot testnet mirror hammer",
+        "Approve proposal 17 ad member Dana dot Testnet anchor bottle."
+      ]
+    },
+    {
+      "reason": "words differ: 'add' -> 'at'",
+      "cases": 34,
+      "examples": [
+        "Approve proposal 13 at member Alice 2 dot Testnet Mirror Hammer.",
+        "Approve proposal 13 at member Alice 2 dot Testnet Mira Hemmer."
+      ]
+    },
+    {
+      "reason": "parse Amount: 'nine' -> 'ninety'",
+      "cases": 30,
+      "examples": [
+        "Send 999999 point 99 near to tim dot testnet.",
+        "Send 999999 point 99 near to tim dot testnet."
+      ]
+    },
+    {
+      "reason": "parse Amount: '' -> 'one'",
+      "cases": 29,
+      "examples": [
+        "Send 1 166 near to peter dot test note",
+        "Send 1 166 near to peter dot testnet."
+      ]
+    },
+    {
+      "reason": "words differ: 'send' -> 'sent'",
+      "cases": 28,
+      "examples": [
+        "Approved proposal 1 sent 8,888 near to bob. Testnet violin muffin.",
+        "Approve proposal 1 sent 8,888 near to bob.testnet via Linmuffin."
+      ]
+    },
+    {
+      "reason": "words differ: '' -> 'approve'",
+      "cases": 25,
+      "examples": [
+        "Approved approved proposal 1 send 8 thousand 888 near to Bob Doc testnet violin muffin",
+        "Approved approved proposal 30 remove member ruby dot near beacon piano"
+      ]
+    },
+    {
+      "reason": "parse NotTransfer: 'testnet' -> 'test net'",
+      "cases": 20,
+      "examples": [
+        "Send 96 dot test net.",
+        "Send 68.3 meter max 9 9 dot test net"
+      ]
+    },
+    {
+      "reason": "parse Amount: 'four' -> 'forty'",
+      "cases": 20,
+      "examples": [
+        "Send 3808 point 45 near to ooma. Testnet.",
+        "Send 3 thousand 8 hundred and 8 point 45 near to ooma dot testnet"
+      ]
+    },
+    {
+      "reason": "words differ: 'dot' -> ''",
+      "cases": 20,
+      "examples": [
+        "Approve proposal 1 send 8,888 near to bob. Testnet violin muffin",
+        "Approved proposal 1 sent 8,888 near to bob. Testnet violin muffin."
+      ]
+    },
+    {
+      "reason": "parse Amount: 'five' -> 'fifty'",
+      "cases": 19,
+      "examples": [
+        "Send 0 point 55 near to Maya dot near",
+        "Send 0 point 55 near to Maya dot near"
+      ]
+    },
+    {
+      "reason": "parse NotTransfer: 'to' -> 'two'",
+      "cases": 19,
+      "examples": [
+        "Send 166 near 2 peter dot test net",
+        "Send 74.15 near 2 ops dash 4 2 dot test net."
+      ]
+    },
+    {
+      "reason": "parse Amount: 'seven' -> 'seventy'",
+      "cases": 18,
+      "examples": [
+        "Send 42100 and 44 point 75 near to Sarah. Testnet",
+        "Send 42144 point 75 near to Sarah dot testnet."
+      ]
+    },
+    {
+      "reason": "words differ: 'testnet' -> 'test net'",
+      "cases": 17,
+      "examples": [
+        "Approve proposal 13 add member alis 2 dot test net mirror hammer",
+        "Approve proposal 17 at member dana.test net anchor bottle."
+      ]
+    },
+    {
+      "reason": "words differ: '' -> 'one'",
+      "cases": 17,
+      "examples": [
+        "Approve proposal 1 115 set threshold to 4 basket jacket",
+        "Approve proposal 1 115 set threshold to 4 basket jacket"
+      ]
+    }
+  ]
+}

@@ -25,6 +25,14 @@ node bench/stt1/score.ts /tmp/stt1/corpus.json /tmp/stt1/cases.jsonl /tmp/stt1/t
   base64, `language: "en"`). At $0.000513 per audio minute, the about 490 audio minutes cost
   about $0.25. The first 10,000 neurons (about 214 audio minutes) of each day are free. A case
   longer than the Worker's 8 s cap is not sent, and counts as refused.
+- `STT1_MODEL=nova-3` calls `@cf/deepgram/nova-3` instead, with no options, as the Worker's
+  stream calls it. `STT1_NOVA_OPTIONS` sets query options, for example
+  `numerals=true&smart_format=true`. It costs $0.0052 per audio minute, about $2.10 for the set.
+- `STT1_PROMPT=<file>` sends the text of the file as Whisper's `initial_prompt`.
+- `score-design-a.sh <work-dir> <transcripts.jsonl> <out-prefix>` scores transcripts under design
+  A (below), with both rule sets. It builds the two scorers on its first run.
+- Workers AI calls of one account share its capacity. Do not run a transcription and a time
+  measurement (`bench/g3`) at the same time.
 
 ## Guard policies
 
@@ -75,9 +83,35 @@ The same transcripts, decided by `spoken-intent` with the contacts (`txg-text ru
 
 The commits are of seams-wallet `crates/spoken-intent` (it moved to speak-to-sign on
 2026-11-09). The grammar tool is seams-console `cc8acf90` for `3a284a874` and `679317d5` for
-`976167297`. To score again, unpack both commits as `build-corpus.sh` does, then run
-`txg-text rulecrate <corpus.json> <cases.jsonl> <heard.jsonl> <out.jsonl>`, where each
-`heard.jsonl` row is `{"caseId", "heard"}` from the transcripts, and
-`score_whisper_crate.py <out.jsonl> <report.json>`. The near misses that these rules accept
-are homophones of the true receiver (64 and 107), which the baseline does not count as false
+`976167297`. `score-design-a.sh` runs both. The near misses that these rules accept are
+homophones of the true receiver (64 and 107), which the baseline does not count as false
 accepts.
+
+The `spoken-intent` of speak-to-sign today (`8db52c1`) does not build with this grammar tool:
+multisig approvals have no challenge words now. So the multisig sentences of STT-1 are not the
+sentences that the Wallet asks for today. A corpus from today's grammar needs a new grammar tool.
+
+## Other transcribers (2026-11-27)
+
+The same 6,630 clips, or a part of them:
+
+| Transcriber                                  | Design A, slot | Design A, forgiving | False accepts (A) | SaySo, every word | False accepts (SaySo) |
+| -------------------------------------------- | -------------- | ------------------- | ----------------- | ----------------- | --------------------- |
+| Whisper turbo (above)                        | 83.4%          | 86.1%               | 0 and 0           | 4.2%              | 0                     |
+| Nova-3, `numerals` and `smart_format`        | 45.5%          | 60.2%               | 6 and 9           | 25.4%             | 8                     |
+| Nova-3, no options                           | 62.1%          | 80.7%               | 0 and 0           | 33.7%             | 8                     |
+
+- **Nova-3 with `numerals` drops a spoken "point".** "nine hundred sixty two point one" becomes
+  "9621", which pays a request for 9,621. All the false accepts under design A (6 and 9) are
+  such moved decimal points. SaySo's word check reads "9621" as the request's words too. On this set the
+  account words refused those readings ("test net"), but a clean account reading would pass. So
+  the Worker's stream sends no options since this run.
+- The 8 false accepts of SaySo's word check with Nova-3 are sound-alike contacts, as with turbo
+  and the punctuation variant.
+- **A contact prompt makes turbo worse.** The 60 contacts in `initial_prompt` (results/
+  `2026-11-27-contacts-prompt.txt`) took a clip from 1.27 s to 3.06 s and changed "eight thousand
+  eight hundred eighty eight" to "88888". On the 803 correct readings of the first 67 requests it
+  accepted 66.5% (slot) and 67.6% (forgiving), against 89.2% and 93.4% without the prompt, with
+  no false accept in either. The run stopped there.
+- The transcripts and score files are in `results/` (`nova-3`, `nova-3-words`,
+  `whisper-large-v3-turbo-contacts-prompt`).

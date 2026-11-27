@@ -1,0 +1,17 @@
+{
+  // A short-lived Worker for gate G3. It reaches the SaySo Worker of staging-testnet, which
+  // has no public route, through the same kind of service binding as the lane's Gateway.
+  "$schema": "../../../workers/verifier/node_modules/wrangler/config-schema.json",
+  "name": "sayso-g3-probe",
+  "account_id": "ea0d54352cf9d80e962154980504b428",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "services": [
+    {
+      "binding": "SAYSO",
+      "service": "sayso-verifier-staging-testnet"
+    }
+  ]
+}
