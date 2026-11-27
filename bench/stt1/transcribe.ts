@@ -14,7 +14,7 @@ const token = process.env.CLOUDFLARE_API_TOKEN;
 const account = process.env.CLOUDFLARE_ACCOUNT_ID;
 if (!token || !account) throw new Error('CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are required');
 const MAX_SAMPLES = 8 * 16_000;
-const CONCURRENCY = 6;
+const CONCURRENCY = Number(process.env.STT1_CONCURRENCY ?? 6);
 const URL = `https://api.cloudflare.com/client/v4/accounts/${account}/ai/run/@cf/openai/whisper-large-v3-turbo`;
 
 interface Case { caseId: string; audio: string }

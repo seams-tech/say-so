@@ -33,3 +33,30 @@ node bench/stt1/score.ts /tmp/stt1/corpus.json /tmp/stt1/cases.jsonl /tmp/stt1/t
 - `values`: every word is guarded except the template words (`send`, `to`, `approve`,
   `proposal`, `add`, `remove`, `member`, `set`, `threshold`, `verifier`, `version`).
 - `all`: every word is guarded, so only an exact match after normalization passes.
+
+`variant.ts` is a test, not SaySo code. It writes the punctuation of an account name as words
+before the check ("eric.testnet" as "eric dot testnet"), to show what such a rule would gain.
+
+## Results of 2026-11-27
+
+`results/` holds the transcripts (6,630 sent, 112 over 8 s) and the three score files. The run
+sent 401 audio minutes. The corpus has the SHA-256 prefix `2bac4446cfbe78ff`.
+
+| Text step                                    | Correct readings       | Transfers | Multisig | False accepts |
+| -------------------------------------------- | ---------------------- | --------- | -------- | ------------- |
+| Baseline (NEAR AI Whisper + slot rules)      | 2,652 of 3,000 (88.4%) | 94.6%     | 63.7%    | 0             |
+| Perfect transcripts, every word guarded      | 2,664 of 3,000 (88.8%) | 90.0%     | 84.0%    | 0             |
+| Whisper turbo, every word guarded            | 125 of 3,000 (4.2%)    | 2.2%      | 12.0%    | 0             |
+| Whisper turbo, values guarded                | 180 of 3,000 (6.0%)    | 2.2%      | 21.2%    | 33            |
+| Whisper turbo + `variant.ts`, every word     | 1,410 of 3,000 (47.0%) | 53.8%     | 19.8%    | 5             |
+
+Why SaySo refuses the correct readings:
+
+- Whisper writes an account as "eric.testnet", and SaySo makes one word of it.
+- Whisper writes a name that sounds the same in another way: "eric" for "erik". The recipient is
+  guarded, so the reading refuses. This was 816 of the refused transfers in the variant.
+- Whisper writes digits as a number: "10374" becomes "ten thousand three hundred seventy four",
+  but the sentence says "one zero three seven four". It writes "Approved" for "approve".
+- SaySo drops the digits of a mixed word: "8888net" becomes "net".
+- The 5 false accepts of the variant are sound-alike contacts ("jon" heard as "John"). Only a
+  contact list can refuse them.

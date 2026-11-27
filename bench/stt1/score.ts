@@ -120,8 +120,9 @@ writeFileSync(outPath, JSON.stringify(summary, null, 2) + '\n');
 
 for (const policy of POLICIES) {
   const g = result[policy] as Record<string, Tally>;
-  const pct = (t: Tally) => `${t.accepted}/${t.cases} (${((100 * t.accepted) / t.cases).toFixed(1)}%)`;
-  console.log(`${policy}: correct ${pct(g.correct)}; transfers ${pct(g['correct/transfer'])}; multisig ${pct(g['correct/multisig'])}; intent refused ${g.correct.intentRefused}; false accepts ${g.near_miss.accepted}/${g.near_miss.cases}`);
+  const pct = (t: Tally = blank()) =>
+    `${t.accepted}/${t.cases} (${t.cases ? ((100 * t.accepted) / t.cases).toFixed(1) : '-'}%)`;
+  console.log(`${policy}: correct ${pct(g.correct)}; transfers ${pct(g['correct/transfer'])}; multisig ${pct(g['correct/multisig'])}; intent refused ${(g.correct ?? blank()).intentRefused}; no transcript ${(g.correct ?? blank()).noTranscript}; false accepts ${pct(g.near_miss)}`);
   for (const [group, t] of Object.entries(g)) {
     if (group.startsWith('near_miss/') && t.accepted > 0) console.log(`  false accepts ${group}: ${t.accepted}/${t.cases}`);
   }

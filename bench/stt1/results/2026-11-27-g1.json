@@ -1,0 +1,231 @@
+{
+  "transcripts": "/private/tmp/claude-501/-Users-pta--claude-spares-spare-cgXuqH/04867ccb-7992-4a00-9625-84fdd9e1db3a/scratchpad/stt1/transcripts.jsonl",
+  "requests": 250,
+  "cases": 6742,
+  "requestsOver16Words": 28,
+  "requestsOver16WordsByKind": {
+    "transfer": 20,
+    "ms_transfer": 8
+  },
+  "policies": {
+    "values": {
+      "correct": {
+        "cases": 3000,
+        "accepted": 180,
+        "intentRefused": 336,
+        "noTranscript": 0
+      },
+      "correct/transfer": {
+        "cases": 2400,
+        "accepted": 53,
+        "intentRefused": 240,
+        "noTranscript": 0
+      },
+      "near_miss": {
+        "cases": 3742,
+        "accepted": 33,
+        "intentRefused": 390,
+        "noTranscript": 56
+      },
+      "near_miss/one_digit": {
+        "cases": 418,
+        "accepted": 0,
+        "intentRefused": 56,
+        "noTranscript": 0
+      },
+      "near_miss/ten_times": {
+        "cases": 348,
+        "accepted": 0,
+        "intentRefused": 8,
+        "noTranscript": 0
+      },
+      "near_miss/moved_decimal": {
+        "cases": 356,
+        "accepted": 0,
+        "intentRefused": 14,
+        "noTranscript": 0
+      },
+      "near_miss/other_contact": {
+        "cases": 420,
+        "accepted": 0,
+        "intentRefused": 56,
+        "noTranscript": 0
+      },
+      "near_miss/changed_verb": {
+        "cases": 500,
+        "accepted": 31,
+        "intentRefused": 56,
+        "noTranscript": 0
+      },
+      "near_miss/negation": {
+        "cases": 500,
+        "accepted": 0,
+        "intentRefused": 56,
+        "noTranscript": 1
+      },
+      "near_miss/added_clause": {
+        "cases": 500,
+        "accepted": 0,
+        "intentRefused": 56,
+        "noTranscript": 55
+      },
+      "near_miss/missing_amount": {
+        "cases": 420,
+        "accepted": 0,
+        "intentRefused": 56,
+        "noTranscript": 0
+      },
+      "correct/multisig": {
+        "cases": 600,
+        "accepted": 127,
+        "intentRefused": 96,
+        "noTranscript": 0
+      },
+      "near_miss/proposal_id": {
+        "cases": 100,
+        "accepted": 0,
+        "intentRefused": 16,
+        "noTranscript": 0
+      },
+      "near_miss/swapped_challenge": {
+        "cases": 100,
+        "accepted": 0,
+        "intentRefused": 16,
+        "noTranscript": 0
+      },
+      "near_miss/add_remove_swapped": {
+        "cases": 40,
+        "accepted": 2,
+        "intentRefused": 0,
+        "noTranscript": 0
+      },
+      "near_miss/threshold_changed": {
+        "cases": 20,
+        "accepted": 0,
+        "intentRefused": 0,
+        "noTranscript": 0
+      },
+      "near_miss/version_digit": {
+        "cases": 20,
+        "accepted": 0,
+        "intentRefused": 0,
+        "noTranscript": 0
+      }
+    },
+    "all": {
+      "correct": {
+        "cases": 3000,
+        "accepted": 125,
+        "intentRefused": 336,
+        "noTranscript": 0
+      },
+      "correct/transfer": {
+        "cases": 2400,
+        "accepted": 53,
+        "intentRefused": 240,
+        "noTranscript": 0
+      },
+      "near_miss": {
+        "cases": 3742,
+        "accepted": 0,
+        "intentRefused": 390,
+        "noTranscript": 56
+      },
+      "near_miss/one_digit": {
+        "cases": 418,
+        "accepted": 0,
+        "intentRefused": 56,
+        "noTranscript": 0
+      },
+      "near_miss/ten_times": {
+        "cases": 348,
+        "accepted": 0,
+        "intentRefused": 8,
+        "noTranscript": 0
+      },
+      "near_miss/moved_decimal": {
+        "cases": 356,
+        "accepted": 0,
+        "intentRefused": 14,
+        "noTranscript": 0
+      },
+      "near_miss/other_contact": {
+        "cases": 420,
+        "accepted": 0,
+        "intentRefused": 56,
+        "noTranscript": 0
+      },
+      "near_miss/changed_verb": {
+        "cases": 500,
+        "accepted": 0,
+        "intentRefused": 56,
+        "noTranscript": 0
+      },
+      "near_miss/negation": {
+        "cases": 500,
+        "accepted": 0,
+        "intentRefused": 56,
+        "noTranscript": 1
+      },
+      "near_miss/added_clause": {
+        "cases": 500,
+        "accepted": 0,
+        "intentRefused": 56,
+        "noTranscript": 55
+      },
+      "near_miss/missing_amount": {
+        "cases": 420,
+        "accepted": 0,
+        "intentRefused": 56,
+        "noTranscript": 0
+      },
+      "correct/multisig": {
+        "cases": 600,
+        "accepted": 72,
+        "intentRefused": 96,
+        "noTranscript": 0
+      },
+      "near_miss/proposal_id": {
+        "cases": 100,
+        "accepted": 0,
+        "intentRefused": 16,
+        "noTranscript": 0
+      },
+      "near_miss/swapped_challenge": {
+        "cases": 100,
+        "accepted": 0,
+        "intentRefused": 16,
+        "noTranscript": 0
+      },
+      "near_miss/add_remove_swapped": {
+        "cases": 40,
+        "accepted": 0,
+        "intentRefused": 0,
+        "noTranscript": 0
+      },
+      "near_miss/threshold_changed": {
+        "cases": 20,
+        "accepted": 0,
+        "intentRefused": 0,
+        "noTranscript": 0
+      },
+      "near_miss/version_digit": {
+        "cases": 20,
+        "accepted": 0,
+        "intentRefused": 0,
+        "noTranscript": 0
+      }
+    }
+  },
+  "falseAcceptExamples": {
+    "values/changed_verb": [
+      "want \"send four point three nine near to fund underscore nine dot testnet\" | heard \"Lend 4.39 near to fund underscore nine dot testnet\"",
+      "want \"send four point three nine near to fund underscore nine dot testnet\" | heard \"Lend 4.39 near to fund underscore nine dot testnet.\"",
+      "want \"send one point one one near to mark dot testnet\" | heard \"Lend 1.11 near to mark dot testnet.\""
+    ],
+    "values/add_remove_swapped": [
+      "want \"approve proposal thirty remove member ruby dot near beacon piano\" | heard \"Approve proposal 30 ad member Ruby dot near Beacon Piano.\"",
+      "want \"approve proposal sixty six add member john dot testnet dragon lemon\" | heard \"Approve Proposal 66 Remove Member John Dot Testnet Dragon Lemon.\""
+    ]
+  }
+}
