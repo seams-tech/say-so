@@ -201,7 +201,7 @@ export class SaySoEngine {
       this.mockMode && params.mockTranscript !== undefined
         ? Promise.resolve(params.mockTranscript)
         : audio.gate_passes
-          ? part('stt', this.deps.stt.transcribeBatch(audio.canonical_wav_b64))
+          ? part('stt', this.deps.stt.transcribeBatch(audio.canonical_wav_b64, ms))
           : Promise.resolve(null),
     ]);
     ms.critical_parallel = this.now() - parallelStart;

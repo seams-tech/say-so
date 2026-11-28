@@ -1,6 +1,6 @@
 /**
  * Cloudflare Workers AI Speech-to-Text (`@cf/deepgram/nova-3` WebSocket streaming
- * + `@cf/openai/whisper-large-v3-turbo` batch fallback).
+ * + `@cf/openai/whisper-large-v3-turbo` batch, with a hedged second call).
  */
 
 export interface SttTranscriptEvent {
@@ -18,7 +18,64 @@ export interface SttLiveStream {
 
 export interface SttProvider {
   openStream(onTranscript: (ev: SttTranscriptEvent) => void): Promise<SttLiveStream>;
-  transcribeBatch(canonicalWavB64: string): Promise<string | null>;
+  /** `ms`, when given, receives `stt_calls` and `stt_answer` (see `firstAnswer`). */
+  transcribeBatch(canonicalWavB64: string, ms?: Record<string, number>): Promise<string | null>;
+}
+
+/**
+ * The batch call starts a second, equal call when the first has not answered in this time.
+ * The time of one turbo call on Workers AI has a long tail that does not depend on the audio
+ * (0.6 s to 5.6 s for 2 s of audio, bench/g3), so a second call often answers first.
+ */
+export const STT_HEDGE_AFTER_MS = 1_500;
+
+/**
+ * Runs `call`, and runs it once more when it has not answered after `hedgeAfterMs` or when it
+ * fails before then. Gives the first answer; `null` from `call` is a failure. Gives `null` only
+ * when every call failed. Records in `ms` the number of calls (`stt_calls`) and which call gave
+ * the answer (`stt_answer`: 1 or 2, or 0 for none). The other call is not stopped, and Workers
+ * AI bills it.
+ */
+export function firstAnswer<T>(
+  call: () => Promise<T | null>,
+  hedgeAfterMs: number,
+  ms?: Record<string, number>,
+): Promise<T | null> {
+  return new Promise((resolve) => {
+    let started = 0;
+    let failed = 0;
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const settle = (answer: T | null, index: number) => {
+      settled = true;
+      clearTimeout(timer);
+      if (ms) ms.stt_answer = index;
+      resolve(answer);
+    };
+    const launch = () => {
+      started += 1;
+      const index = started;
+      if (ms) ms.stt_calls = started;
+      void Promise.resolve()
+        .then(call)
+        .catch(() => null)
+        .then((answer) => {
+          if (settled) return;
+          if (answer !== null) return settle(answer, index);
+          failed += 1;
+          if (started < 2) {
+            clearTimeout(timer);
+            launch();
+          } else if (failed === started) {
+            settle(null, 0);
+          }
+        });
+    };
+    launch();
+    timer = setTimeout(() => {
+      if (!settled && started < 2) launch();
+    }, hedgeAfterMs);
+  });
 }
 
 interface WorkersAiBinding {
@@ -34,7 +91,11 @@ interface DeepgramWsMessage {
   };
 }
 
-export function createWorkersAiSttProvider(ai: WorkersAiBinding): SttProvider {
+export function createWorkersAiSttProvider(
+  ai: WorkersAiBinding,
+  options: { hedgeAfterMs?: number } = {},
+): SttProvider {
+  const hedgeAfterMs = options.hedgeAfterMs ?? STT_HEDGE_AFTER_MS;
   return {
     async openStream(onTranscript) {
       const response = (await ai.run(
@@ -159,16 +220,16 @@ export function createWorkersAiSttProvider(ai: WorkersAiBinding): SttProvider {
       };
     },
 
-    async transcribeBatch(canonicalWavB64: string): Promise<string | null> {
-      try {
+    async transcribeBatch(canonicalWavB64, ms) {
+      const once = async () => {
         const result = (await ai.run('@cf/openai/whisper-large-v3-turbo', {
           audio: canonicalWavB64,
           language: 'en',
         })) as { text?: string };
-        return result.text?.trim() || null;
-      } catch {
-        return null;
-      }
+        return { text: result.text?.trim() || null };
+      };
+      const answer = await firstAnswer(once, hedgeAfterMs, ms);
+      return answer?.text ?? null;
     },
   };
 }

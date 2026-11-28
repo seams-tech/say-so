@@ -150,12 +150,18 @@ const summary = Object.fromEntries(
       const key = slowestPart(s) ?? 'unknown';
       slowest[key] = (slowest[key] ?? 0) + 1;
     }
-    return [kind, { n: of.length, accepted: of.filter((s) => s.outcome === 'accept').length, parts, slowest }];
+    // With the hedged turbo call: the verifies that started a second call, and those that the
+    // second call answered.
+    const hedge = {
+      second_started: of.filter((s) => s.serverMs.stt_calls === 2).length,
+      second_answered: of.filter((s) => s.serverMs.stt_answer === 2).length,
+    };
+    return [kind, { n: of.length, accepted: of.filter((s) => s.outcome === 'accept').length, parts, slowest, hedge }];
   }),
 );
 writeFileSync(outPath, JSON.stringify({ probe: new URL(probe).host, userId, voice: VOICE, enroll: { status: enroll.status, agreement_milli: enroll.json?.agreement_milli, clientMs: enroll.clientMs, bindingMs: enroll.bindingMs, serverMs: enroll.json?.ms }, summary, samples }, null, 2) + '\n');
 for (const [kind, s] of Object.entries(summary)) {
-  console.log(`${kind}: ${s.n} verifies, ${s.accepted} accepted; slowest part ${JSON.stringify(s.slowest)}`);
+  console.log(`${kind}: ${s.n} verifies, ${s.accepted} accepted; slowest part ${JSON.stringify(s.slowest)}; hedge ${JSON.stringify(s.hedge)}`);
   console.log(`  ${'part'.padEnd(18)} ${'p50'.padStart(6)} ${'p95'.padStart(6)} ${'max'.padStart(6)}`);
   for (const [key, v] of Object.entries(s.parts)) {
     console.log(`  ${key.padEnd(18)} ${String(v.p50 ?? '-').padStart(6)} ${String(v.p95 ?? '-').padStart(6)} ${String(v.max ?? '-').padStart(6)}`);

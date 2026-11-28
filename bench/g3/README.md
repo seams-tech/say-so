@@ -34,7 +34,9 @@ For each verify, `result.json` has three times:
   Cloudflare.
 - `serverMs`: the `ms` record that SaySo returns with each verify. Speech to text, the speaker
   and storage run in parallel, and each has its own time from the start of that parallel part:
-  - `stt`: the Whisper turbo call on Workers AI.
+  - `stt`: the Whisper turbo call on Workers AI, with its hedge. `stt_calls` is 2 when the
+    first call had not answered after `STT_HEDGE_AFTER_MS` (`workers/verifier/src/stt.ts`), so
+    a second call started; `stt_answer` is the call that answered.
   - `speaker`: the call to the speaker container, with a container start when it is cold.
   - `redimnet`: the speaker model alone, inside `speaker`.
   - `storage`: the Durable Object that consumes the audio digest and reads the template.
@@ -42,6 +44,7 @@ For each verify, `result.json` has three times:
 
 The summary gives p50, p95 and the maximum of each time, for warm and for cold verifies. It
 also gives `outside_engine` (`bindingMs` less `total`: authorization, the rate limit and the
-JSON work of the Worker) and `slowest`, the count of verifies that each parallel part set.
+JSON work of the Worker), `slowest`, the count of verifies that each parallel part set, and
+`hedge`, the count of verifies that started a second turbo call and that it answered.
 
 The time of the Gateway itself and of the browser upload is not in the result.
