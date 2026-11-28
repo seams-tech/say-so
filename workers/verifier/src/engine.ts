@@ -189,19 +189,19 @@ export class SaySoEngine {
     }
 
     const parallelStart = this.now();
+    const part = <T>(key: string, promise: Promise<T>) => this.timePart(ms, key, parallelStart, promise);
     const [consumed, speakerReply, transcript] = await Promise.all([
-      this.deps.voiceStore.consumeAudioAndGetTemplate(
-        params.intent.user_id,
-        audio.audio_digest_b64u,
-        started,
+      part(
+        'storage',
+        this.deps.voiceStore.consumeAudioAndGetTemplate(params.intent.user_id, audio.audio_digest_b64u, started),
       ),
       audio.gate_passes
-        ? this.deps.speaker.embed(audio.canonical_wav_b64, audio.audio_digest_hex)
+        ? part('speaker', this.deps.speaker.embed(audio.canonical_wav_b64, audio.audio_digest_hex))
         : Promise.resolve(null),
       this.mockMode && params.mockTranscript !== undefined
         ? Promise.resolve(params.mockTranscript)
         : audio.gate_passes
-          ? this.deps.stt.transcribeBatch(audio.canonical_wav_b64)
+          ? part('stt', this.deps.stt.transcribeBatch(audio.canonical_wav_b64))
           : Promise.resolve(null),
     ]);
     ms.critical_parallel = this.now() - parallelStart;
@@ -286,11 +286,15 @@ export class SaySoEngine {
       }
 
       const parallelStart = this.now();
+      const part = <T>(key: string, promise: Promise<T>) => this.timePart(ms, key, parallelStart, promise);
       const [flushedTranscript, consumed, speakerReply] = await Promise.all([
-        sttStream ? sttStream.finishAndFlush() : Promise.resolve(latestTranscript || null),
-        this.deps.voiceStore.consumeAudioAndGetTemplate(intent.user_id, audio.audio_digest_b64u, commitStarted),
+        sttStream ? part('stt', sttStream.finishAndFlush()) : Promise.resolve(latestTranscript || null),
+        part(
+          'storage',
+          this.deps.voiceStore.consumeAudioAndGetTemplate(intent.user_id, audio.audio_digest_b64u, commitStarted),
+        ),
         audio.gate_passes
-          ? this.deps.speaker.embed(audio.canonical_wav_b64, audio.audio_digest_hex)
+          ? part('speaker', this.deps.speaker.embed(audio.canonical_wav_b64, audio.audio_digest_hex))
           : Promise.resolve(null),
       ]);
       sttStream?.close();
@@ -512,6 +516,18 @@ export class SaySoEngine {
       params.ms,
       params.started,
     );
+  }
+
+  /**
+   * Records in `ms[key]` the time from `since` until `promise` settles. The verify paths run
+   * speech to text, the speaker and storage in parallel, so `critical_parallel` alone does not
+   * say which part was slow. In a Worker the clock moves only across I/O, and each part ends in
+   * I/O, so the time is that of the part.
+   */
+  private timePart<T>(ms: Record<string, number>, key: string, since: number, promise: Promise<T>): Promise<T> {
+    return promise.finally(() => {
+      ms[key] = this.now() - since;
+    });
   }
 
   private signRefusal(

@@ -683,3 +683,51 @@ test('A transcriptOnly intent signs the transcript as written, and Rust and Type
     assert.equal(rust.intent_digest_b64u, Buffer.from(ts.intentDigest).toString('base64url'), sentence);
   }
 });
+
+test('A verify reports the time of speech to text, the speaker and storage apart', async () => {
+  const wasm = await SaySoCore.fromBytes(wasmBytes);
+  const signer = await createVerdictSignerFromSeedHex('77'.repeat(32));
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const engine = new SaySoEngine({
+    wasm,
+    signer,
+    voiceStore: createInMemoryVoiceStore(),
+    speaker: {
+      async embed() {
+        await wait(10);
+        return { embeddingLeB64: makeAxisEmbeddingB64(0, 0.04), modelMs: 7 };
+      },
+    },
+    stt: {
+      async openStream() {
+        throw new Error('this test uses the batch path');
+      },
+      async transcribeBatch() {
+        await wait(60);
+        return 'send ten near to bob dot testnet';
+      },
+    },
+  });
+  const userId = 'near:testnet:alice.testnet';
+  await engine.enroll(userId, [0.08, 0.09, 0.1].map((s) => toBase64(pcm16ToCanonicalWav(makeToneSamples(900, s)))));
+  const { intent } = await createIntent({
+    userId,
+    action: 'seams.near.transfer',
+    payloadSha256: '42'.repeat(32),
+    sentence: 'send ten near to bob dot testnet',
+  });
+  const { ms } = await engine.verifyBatch({
+    intent,
+    audioWavB64: toBase64(pcm16ToCanonicalWav(makeToneSamples(950, 0.14))),
+  });
+
+  for (const key of ['decode', 'storage', 'speaker', 'stt', 'redimnet', 'critical_parallel', 'sign', 'total']) {
+    assert.equal(typeof ms[key], 'number', key);
+  }
+  assert.equal(ms.redimnet, 7);
+  // The slow transcriber sets the parallel time; the speaker and storage end before it.
+  assert.ok(ms.stt >= 55, `stt ${ms.stt}`);
+  assert.ok(ms.speaker >= 5 && ms.speaker <= ms.stt, `speaker ${ms.speaker}`);
+  assert.ok(ms.storage <= ms.speaker, `storage ${ms.storage}`);
+  assert.ok(ms.critical_parallel >= ms.stt && ms.total >= ms.critical_parallel, JSON.stringify(ms));
+});

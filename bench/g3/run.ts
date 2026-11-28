@@ -117,15 +117,47 @@ function pct(values: number[], p: number): number | null {
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1)];
 }
+// The parts that run in parallel inside the verify step; the slowest one sets its time.
+const PARALLEL_PARTS = ['stt', 'speaker', 'storage'] as const;
+// `binding` and `client` are the times outside SaySo's engine; the others are the `ms` record
+// that SaySo returns. `outside_engine` is the binding time less the engine's `total`: the
+// authorization, the rate limit and the JSON work of the Worker.
+const SERIES = ['client', 'binding', 'outside_engine', 'total', 'critical_parallel', ...PARALLEL_PARTS, 'redimnet', 'decode', 'sign'] as const;
+function seriesOf(s: Sample, key: (typeof SERIES)[number]): number {
+  if (key === 'client') return s.clientMs;
+  if (key === 'binding') return s.bindingMs;
+  if (key === 'outside_engine') return s.bindingMs - (s.serverMs.total ?? NaN);
+  return s.serverMs[key] ?? NaN;
+}
+function slowestPart(s: Sample): string | null {
+  let best: string | null = null;
+  for (const key of PARALLEL_PARTS) {
+    if (Number.isFinite(s.serverMs[key]) && (best === null || s.serverMs[key] > s.serverMs[best])) best = key;
+  }
+  return best;
+}
 const summary = Object.fromEntries(
   (['warm', 'cold'] as const).map((kind) => {
     const of = samples.filter((s) => s.kind === kind);
-    const stats = (key: 'clientMs' | 'bindingMs') => {
-      const v = of.map((s) => s[key]).filter(Number.isFinite);
-      return { p50: pct(v, 50), p95: pct(v, 95), max: v.length ? Math.max(...v) : null };
-    };
-    return [kind, { n: of.length, accepted: of.filter((s) => s.outcome === 'accept').length, client: stats('clientMs'), binding: stats('bindingMs') }];
+    const parts = Object.fromEntries(
+      SERIES.map((key) => {
+        const v = of.map((s) => seriesOf(s, key)).filter(Number.isFinite);
+        return [key, { p50: pct(v, 50), p95: pct(v, 95), max: v.length ? Math.max(...v) : null }];
+      }),
+    );
+    const slowest: Record<string, number> = {};
+    for (const s of of) {
+      const key = slowestPart(s) ?? 'unknown';
+      slowest[key] = (slowest[key] ?? 0) + 1;
+    }
+    return [kind, { n: of.length, accepted: of.filter((s) => s.outcome === 'accept').length, parts, slowest }];
   }),
 );
 writeFileSync(outPath, JSON.stringify({ probe: new URL(probe).host, userId, voice: VOICE, enroll: { status: enroll.status, agreement_milli: enroll.json?.agreement_milli, clientMs: enroll.clientMs, bindingMs: enroll.bindingMs, serverMs: enroll.json?.ms }, summary, samples }, null, 2) + '\n');
-console.log(JSON.stringify(summary, null, 2));
+for (const [kind, s] of Object.entries(summary)) {
+  console.log(`${kind}: ${s.n} verifies, ${s.accepted} accepted; slowest part ${JSON.stringify(s.slowest)}`);
+  console.log(`  ${'part'.padEnd(18)} ${'p50'.padStart(6)} ${'p95'.padStart(6)} ${'max'.padStart(6)}`);
+  for (const [key, v] of Object.entries(s.parts)) {
+    console.log(`  ${key.padEnd(18)} ${String(v.p50 ?? '-').padStart(6)} ${String(v.p95 ?? '-').padStart(6)} ${String(v.max ?? '-').padStart(6)}`);
+  }
+}

@@ -32,7 +32,16 @@ For each verify, `result.json` has three times:
   Gateway waits for SaySo.
 - `clientMs`: the time from this machine through the probe. It adds the network path to
   Cloudflare.
-- `serverMs`: the times that SaySo reports: `critical_parallel` (speech-to-text, speaker and
-  storage in parallel), `redimnet` (the speaker model) and `total`.
+- `serverMs`: the `ms` record that SaySo returns with each verify. Speech to text, the speaker
+  and storage run in parallel, and each has its own time from the start of that parallel part:
+  - `stt`: the Whisper turbo call on Workers AI.
+  - `speaker`: the call to the speaker container, with a container start when it is cold.
+  - `redimnet`: the speaker model alone, inside `speaker`.
+  - `storage`: the Durable Object that consumes the audio digest and reads the template.
+  - `critical_parallel`: the parallel part, so the slowest of the three; `total`: the engine.
+
+The summary gives p50, p95 and the maximum of each time, for warm and for cold verifies. It
+also gives `outside_engine` (`bindingMs` less `total`: authorization, the rate limit and the
+JSON work of the Worker) and `slowest`, the count of verifies that each parallel part set.
 
 The time of the Gateway itself and of the browser upload is not in the result.
