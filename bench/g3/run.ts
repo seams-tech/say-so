@@ -8,10 +8,10 @@
 // recordings, then sends `warm` verifies (default 40), then `cold` verifies (default 5), each
 // after `idle-s` seconds with no request (default 300; the container sleeps after 3 minutes).
 // Each verify is a transcript-only intent with its own sentence, so each recording is new.
-import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { createIntent, pcm16ToCanonicalWav } from '../../packages/sayso-verdict/src/index.ts';
+import { createIntent } from '../../packages/sayso-verdict/src/index.ts';
+import { pct, speak as speakIn, VOICE } from './voice.ts';
 
 const [probe, work, outPath, warmArg, coldArg, idleArg] = process.argv.slice(2);
 const apiKey = process.env.SAYSO_API_KEY;
@@ -21,18 +21,8 @@ const COLD = Number(coldArg ?? 5);
 const IDLE_MS = Number(idleArg ?? 300) * 1_000;
 // The Worker allows 30 verifies a minute for one user.
 const MIN_GAP_MS = 2_100;
-const VOICE = 'Samantha';
 mkdirSync(work, { recursive: true });
-
-function speak(text: string, name: string): { b64: string; seconds: number } {
-  const aiff = `${work}/${name}.aiff`;
-  execFileSync('say', ['-v', VOICE, '-r', '180', '-o', aiff, text]);
-  const raw = execFileSync('ffmpeg', ['-v', 'error', '-i', aiff, '-ac', '1', '-ar', '16000', '-f', 's16le', '-'], {
-    maxBuffer: 64 * 1024 * 1024,
-  });
-  const pcm = new Int16Array(raw.buffer, raw.byteOffset, raw.byteLength / 2);
-  return { b64: Buffer.from(pcm16ToCanonicalWav(pcm)).toString('base64'), seconds: pcm.length / 16_000 };
-}
+const speak = (text: string, name: string) => speakIn(work, text, name);
 
 async function call(path: string, body: unknown): Promise<{ status: number; clientMs: number; bindingMs: number; json: any }> {
   const started = performance.now();
@@ -112,11 +102,6 @@ for (let i = 0; i < COLD; i += 1) {
   await verify('cold', WARM + i);
 }
 
-function pct(values: number[], p: number): number | null {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1)];
-}
 // The parts that run in parallel inside the verify step; the slowest one sets its time.
 const PARALLEL_PARTS = ['stt', 'speaker', 'storage'] as const;
 // `binding` and `client` are the times outside SaySo's engine; the others are the `ms` record

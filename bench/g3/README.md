@@ -48,3 +48,17 @@ JSON work of the Worker), `slowest`, the count of verifies that each parallel pa
 `hedge`, the count of verifies that started a second turbo call and that it answered.
 
 The time of the Gateway itself and of the browser upload is not in the result.
+
+## The control: the turbo call alone
+
+`pairs.ts` calls the Whisper turbo model through the Workers AI REST API from this machine, with
+no SaySo code in the path. It sends pairs of two equal calls at the same time, as the hedged
+call does, and gives the correlation of the two times of a pair. A hedge helps only when one
+slow call does not make the other slow too.
+
+```sh
+CLOUDFLARE_API_TOKEN=... node bench/g3/pairs.ts target/g3-pairs target/g3/pairs.json 40
+```
+
+Its times include the path from this machine to the API, so compare their spread with the
+Worker's `stt` times, not their level. Do not run it while a transcription batch runs.
