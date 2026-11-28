@@ -73,8 +73,9 @@ function request(b64: string): RequestInit {
 
 async function transcribe(b64: string): Promise<{ text: string | null; status: number }> {
   for (let attempt = 0; attempt < 5; attempt += 1) {
-    const res = await fetch(URL, request(b64));
-    if (res.status === 429 || res.status >= 500) {
+    // A network error (a reset or a read timeout) is retried as a 5xx answer is.
+    const res = await fetch(URL, request(b64)).catch(() => null);
+    if (!res || res.status === 429 || res.status >= 500) {
       await new Promise((r) => setTimeout(r, 1_000 * 2 ** attempt));
       continue;
     }
