@@ -20,6 +20,12 @@ export interface EnrollWireOutput {
   ms: Record<string, number>;
 }
 
+/** The answer of `POST /v1/template/delete`. `deleted` is false when the user had no template. */
+export interface TemplateDeleteWireOutput {
+  kind: 'sayso_template_delete_v1';
+  deleted: boolean;
+}
+
 export interface RenderWireOutput {
   ok: boolean;
   sentence?: string;

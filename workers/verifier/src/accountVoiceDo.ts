@@ -22,6 +22,8 @@ export interface RateLimitResult {
 export interface VoiceStore {
   getTemplate(userId: string): Promise<StoredVoiceTemplate | null>;
   saveTemplate(userId: string, epoch: number, templateSvt1B64: string): Promise<void>;
+  /** Deletes the template. True when there was one. The used audio digests stay, so a recording still counts once. */
+  deleteTemplate(userId: string): Promise<boolean>;
   consumeAudioAndGetTemplate(
     userId: string,
     audioDigestB64u: string,
@@ -79,6 +81,10 @@ export class AccountVoiceDO {
         Date.now(),
       );
       return Response.json({ ok: true });
+    }
+    if (request.method === 'DELETE' && url.pathname === '/template') {
+      const cursor = this.sql.exec(`DELETE FROM template WHERE id = 1`);
+      return Response.json({ deleted: cursor.rowsWritten > 0 });
     }
     if (request.method === 'POST' && url.pathname === '/consume') {
       const body = (await request.json()) as { audioDigestB64u: string; nowMs: number };
@@ -145,6 +151,11 @@ export function createDurableObjectVoiceStore(ns: DurableObjectNamespace): Voice
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ epoch, templateSvt1B64 }),
       });
+    },
+    async deleteTemplate(userId) {
+      const res = await stubFor(userId).fetch('https://do/template', { method: 'DELETE' });
+      const data = (await res.json()) as { deleted: boolean };
+      return data.deleted;
     },
     async consumeAudioAndGetTemplate(userId, audioDigestB64u, nowMs) {
       const res = await stubFor(userId).fetch('https://do/consume', {

@@ -130,6 +130,15 @@ if (result.ok) parseMyRequest(result.verdict.heard); // "Send 8,888 NEAR to erik
 - The stream (`/v1/stream`) does not close early on a word match for such an intent; it closes on the end of speech.
 - An intent cannot have both `transcriptOnly` and `guardedWordIndexes`.
 
+## Deleting a Voice Template (`POST /v1/template/delete`)
+
+`POST /v1/template/delete` with `{ "user_id": "..." }` deletes the user's voice template, for
+example when the user turns voice approval off. It takes the same credentials as an enrollment
+(`Authorization: Bearer <SAYSO_API_KEY>` or an enrollment token for that user) and answers
+`{ "kind": "sayso_template_delete_v1", "deleted": true }`, or `false` when the user had no
+template. Each later verify refuses with `template_missing` until the user enrolls again. The
+used audio digests stay, so a recording still counts only once.
+
 ## Quick Start
 
 ```bash

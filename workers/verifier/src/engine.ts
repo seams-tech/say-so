@@ -1,6 +1,7 @@
 import type {
   EnrollWireOutput,
   RenderWireOutput,
+  TemplateDeleteWireOutput,
   StreamClientMessage,
   StreamServerMessage,
   VerifyWireOutput,
@@ -161,6 +162,14 @@ export class SaySoEngine {
       verifier_public_key_hex: this.deps.signer.publicKeyHex,
       ms,
     };
+  }
+
+  /**
+   * Deletes the voice template of `userId`, for example when the user turns voice approval off.
+   * A later verify refuses with `template_missing` until the user enrolls again.
+   */
+  async deleteTemplate(userId: string): Promise<TemplateDeleteWireOutput> {
+    return { kind: 'sayso_template_delete_v1', deleted: await this.deps.voiceStore.deleteTemplate(userId) };
   }
 
   async verifyBatch(params: {

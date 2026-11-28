@@ -308,6 +308,32 @@ export default {
       return jsonResponse(request, await engine.enroll(body.user_id, body.audio_wav_b64 ?? []), env);
     }
 
+    // The same callers that may enroll a user may delete the user's template.
+    if (request.method === 'POST' && url.pathname === '/v1/template/delete') {
+      const parsed = await readJsonBody<{ user_id: string; enrollment_token?: string }>(
+        request,
+        MAX_RENDER_BODY_BYTES,
+      );
+      if (!parsed.ok) {
+        return jsonResponse(request, { error: parsed.error }, env, parsed.status);
+      }
+      const body = parsed.data;
+      if (!body.user_id || typeof body.user_id !== 'string') {
+        return jsonResponse(request, { error: 'invalid_user_id' }, env, 400);
+      }
+      const auth = await authorizeEnrollment({
+        request,
+        userId: body.user_id,
+        bodyToken: body.enrollment_token,
+        env,
+      });
+      if (!auth.ok) {
+        return jsonResponse(request, { error: auth.reason }, env, auth.status);
+      }
+      const engine = await buildEngine(env);
+      return jsonResponse(request, await engine.deleteTemplate(body.user_id), env);
+    }
+
     if (request.method === 'POST' && url.pathname === '/v1/verify') {
       const parsed = await readJsonBody<{
         intent: SaySoIntentInput;

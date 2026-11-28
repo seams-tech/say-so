@@ -58,6 +58,9 @@ function createInMemoryVoiceStore(): VoiceStore {
     async saveTemplate(userId, epoch, templateSvt1B64) {
       templates.set(userId, { epoch, templateSvt1B64 });
     },
+    async deleteTemplate(userId) {
+      return templates.delete(userId);
+    },
     async consumeAudioAndGetTemplate(userId, audioDigestB64u) {
       let set = usedAudio.get(userId);
       if (!set) {
@@ -730,4 +733,57 @@ test('A verify reports the time of speech to text, the speaker and storage apart
   assert.ok(ms.speaker >= 5 && ms.speaker <= ms.stt, `speaker ${ms.speaker}`);
   assert.ok(ms.storage <= ms.speaker, `storage ${ms.storage}`);
   assert.ok(ms.critical_parallel >= ms.stt && ms.total >= ms.critical_parallel, JSON.stringify(ms));
+});
+
+test('A deleted template refuses every later verify until the user enrolls again', async () => {
+  const wasm = await SaySoCore.fromBytes(wasmBytes);
+  const signer = await createVerdictSignerFromSeedHex('88'.repeat(32));
+  const engine = new SaySoEngine({
+    wasm,
+    signer,
+    voiceStore: createInMemoryVoiceStore(),
+    speaker: {
+      async embed() {
+        return { embeddingLeB64: makeAxisEmbeddingB64(0, 0.04), modelMs: 12 };
+      },
+    },
+    stt: {
+      async openStream() {
+        throw new Error('this test uses the batch path');
+      },
+      async transcribeBatch() {
+        return 'Send 10 NEAR to bob.testnet.';
+      },
+    },
+  });
+  const userId = 'near:testnet:alice.testnet';
+  const enrollClips = [0.08, 0.09, 0.1].map((s) => toBase64(pcm16ToCanonicalWav(makeToneSamples(900, s))));
+  const { intent } = await createIntent({
+    userId,
+    action: 'seams.near.transfer',
+    payloadSha256: '42'.repeat(32),
+    sentence: 'send ten near to bob dot testnet',
+    transcriptOnly: true,
+  });
+  const verify = async (step: number) => {
+    const output = await engine.verifyBatch({
+      intent,
+      audioWavB64: toBase64(pcm16ToCanonicalWav(makeToneSamples(950, 0.11 + step / 100))),
+    });
+    return JSON.parse(output.verdict_json) as { outcome: string; reason: string | null };
+  };
+
+  assert.equal((await engine.enroll(userId, enrollClips)).outcome, 'accept');
+  assert.equal((await verify(1)).outcome, 'accept');
+
+  assert.deepEqual(await engine.deleteTemplate(userId), { kind: 'sayso_template_delete_v1', deleted: true });
+  for (const step of [2, 3]) {
+    const verdict = await verify(step);
+    assert.deepEqual([verdict.outcome, verdict.reason], ['refuse', 'template_missing']);
+  }
+  // A second delete finds nothing.
+  assert.deepEqual(await engine.deleteTemplate(userId), { kind: 'sayso_template_delete_v1', deleted: false });
+
+  assert.equal((await engine.enroll(userId, enrollClips)).outcome, 'accept');
+  assert.equal((await verify(4)).outcome, 'accept');
 });
